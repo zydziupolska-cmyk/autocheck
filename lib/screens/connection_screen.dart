@@ -9,6 +9,7 @@ import '../services/obd_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui.dart';
 import 'learning_screen.dart';
+import 'coding_screen.dart';
 
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({super.key});
@@ -353,7 +354,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     color: v.distanceSinceDtcClearedKm < 50 ? AppTheme.warn : null,
                   ),
                 ],
-                row("Adapter", obd.stnId ?? obd.adapterId),
+                row("Adapter", (obd.stnId ?? "").startsWith("DX1") ? "Kostka Dynomic OBD (${obd.stnId})" : obd.stnId ?? obd.adapterId),
                 if (obd.protocolName.isNotEmpty) row("Protokół", obd.protocolName.replaceFirst("AUTO, ", "")),
               ],
             ),
@@ -463,7 +464,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     final r = _scanResults[i];
                     final name = r.device.platformName.isNotEmpty ? r.device.platformName : "Nieznane urządzenie";
                     final lower = name.toLowerCase();
-                    final likelyObd = lower.contains("vlinker") || lower.contains("obd") || lower.contains("v-link");
+                    final likelyObd = lower.contains("vlinker") || lower.contains("obd") || lower.contains("v-link") || lower.contains("dynomic");
                     return ListTile(
                       dense: true,
                       leading: Icon(Icons.bluetooth, size: 20, color: likelyObd ? AppTheme.accent : AppTheme.textMuted),
@@ -569,6 +570,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
           onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LearningScreen())),
           icon: const Icon(Icons.hearing, size: 18),
           label: const Text("Nauka od testera (kabel Y)"),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CodingScreen())),
+          icon: const Icon(Icons.tune, size: 18),
+          label: Text(obd.canScanVagModules
+              ? "Kodowanie i adaptacje (kopia zapasowa)"
+              : "Identyfikacja sterownika (odczyt)"),
         ),
         if (_moduleScanSummary != null) ...[
           const SizedBox(height: 10),

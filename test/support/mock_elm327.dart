@@ -59,6 +59,12 @@ class MockElm327 {
   /// po 4 bajty: 3 bajty kodu + status).
   final Map<String, (String, List<List<int>>)> vagModules = {};
 
+  /// Kodowanie/adaptacje modułów: requestId -> (DID hex 4 znaki -> bajty).
+  /// Moduł odpowiada wtedy na 10 (sesja), 22 (odczyt) i 2E (zapis).
+  final Map<String, Map<String, List<int>>> moduleCoding = {};
+  /// DID, których zapis (2E) moduł odrzuci jako wymagające dostępu zabezpieczonego.
+  final Set<String> codingSecured = {};
+
   bool debugLog = false;
 
   /// Moduły VAG na TP2.0 (starsze platformy): adres → lista (kod VAG, status).
@@ -220,10 +226,15 @@ class MockElm327 {
         if (_header == "7DF" || _header == "7E0") targets.add(("7E8", true));
         if (_header == "7DF" || _header == "7E1") targets.add(("7E9", false));
         final module = vagModules[_header];
-        if (module != null) {
-          if (request.length >= 2 && request[0] == 0x19 && request[1] == 0x02) {
-            return _format(module.$1, [0x59, 0x02, 0xFF, for (final r in module.$2) ...r]).join("\r");
+        final coding = moduleCoding[_header];
+        // Silnik (7E0) i zapytania funkcyjne obsługuje _engine — tu tylko osobne moduły
+        if (targets.isEmpty && (module != null || coding != null)) {
+          final resp = module?.$1 ?? _codingResponseId(_header);
+          if (module != null && request.length >= 2 && request[0] == 0x19 && request[1] == 0x02) {
+            return _format(resp, [0x59, 0x02, 0xFF, for (final r in module.$2) ...r]).join("\r");
           }
+          final uds = _codingService(request, coding ?? const {});
+          if (uds != null) return _format(resp, uds).join("\r");
           return "NO DATA";
         }
       case MockBus.can29:
@@ -401,6 +412,36 @@ class MockElm327 {
         mid, 0x0C, 0x24, count >> 8, count & 0xFF, 0x00, 0x00, 0xFF, 0xFF, // bieżący cykl
       ];
 
+  static String _codingResponseId(String requestId) {
+    final v = int.tryParse(requestId, radix: 16);
+    if (v != null && v >= 0x700 && v <= 0x7FF) return (v + 0x6A).toRadixString(16).toUpperCase();
+    return requestId;
+  }
+
+  /// Obsługa UDS kodowania/adaptacji dla modułu (10 sesja, 22 odczyt, 2E zapis).
+  List<int>? _codingService(List<int> req, Map<String, List<int>> store) {
+    if (req.isEmpty) return null;
+    switch (req[0]) {
+      case 0x10:
+        return [0x50, req.length > 1 ? req[1] : 0x03, 0x00, 0x32, 0x01, 0xF4];
+      case 0x22:
+        if (req.length < 3) return [0x7F, 0x22, 0x13];
+        final did = "${_hex(req[1])}${_hex(req[2])}";
+        final data = store[did];
+        if (data != null) return [0x62, req[1], req[2], ...data];
+        return [0x7F, 0x22, 0x31];
+      case 0x2E:
+        if (req.length < 3) return [0x7F, 0x2E, 0x13];
+        final did = "${_hex(req[1])}${_hex(req[2])}";
+        if (codingSecured.contains(did)) return [0x7F, 0x2E, 0x33]; // securityAccessDenied
+        if (!store.containsKey(did)) return [0x7F, 0x2E, 0x31];
+        store[did] = req.sublist(3);
+        return [0x6E, req[1], req[2]];
+      default:
+        return [0x7F, req[0], 0x11];
+    }
+  }
+
   List<int>? _engine(List<int> req) {
     if (req.isEmpty) return null;
     // Zapytanie o kilka PIDów naraz: 01 0C 0D 0B ... → 41 0C dane 0D dane 0B dane ...
@@ -511,10 +552,14 @@ class MockElm327 {
             return [0x49, 0x0A, 0x01, ..._ascii("ECM\u0000-EngineControl", 20)];
         }
         return null;
+      case 0x10:
+      case 0x2E:
+        return _codingService(req, moduleCoding.putIfAbsent("7E0", () => {}));
       case 0x22:
         if (req.length >= 3) {
           final did = "${_hex(req[1])}${_hex(req[2])}";
-          final data = udsDids[did];
+          if (did == "F190") return [0x62, 0xF1, 0x90, ...vin.codeUnits];
+          final data = udsDids[did] ?? moduleCoding["7E0"]?[did];
           if (data != null) return [0x62, req[1], req[2], ...data];
         }
         // UDS VAG (tylko wersja benzynowa): doładowanie rzeczywiste 202A i zadane 2029 w hPa

@@ -7,6 +7,7 @@ import 'services/datalogger_service.dart';
 import 'services/obd_service.dart';
 import 'services/pid_definitions_store.dart';
 import 'services/sniff_service.dart';
+import 'services/coding_service.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -22,6 +23,7 @@ Future<void> main() async {
   final dataloggerService = DataloggerService(obdService: obdService);
   final definitionsStore = PidDefinitionsStore(obd: obdService);
   final sniffService = SniffService(obd: obdService);
+  final codingService = CodingService(obd: obdService);
 
   runApp(
     MultiProvider(
@@ -30,6 +32,7 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: dataloggerService),
         ChangeNotifierProvider.value(value: definitionsStore),
         ChangeNotifierProvider.value(value: sniffService),
+        ChangeNotifierProvider.value(value: codingService),
       ],
       child: const DynomicDiagApp(),
     ),

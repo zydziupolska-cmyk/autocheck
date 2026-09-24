@@ -99,6 +99,7 @@ class ObdService extends ChangeNotifier {
   ObdBusType get busType => _bus;
   bool get isMonitoring => _monitoring;
   String? get engineEcuAddress => _engineEcu;
+  String? get engineRequestHeader => _engineHeader;
   Set<int> get supportedPidNumbers => _supportedPids;
 
   /// Katalog czujników bez duplikatów nazw (np. dwa warianty PEDAL).
@@ -1189,6 +1190,127 @@ class ObdService extends ChangeNotifier {
     return results;
   }
 
+  // ===========================================================================
+  // Kodowanie i adaptacje (UDS) — odczyt i backup wartości oficjalnie dostępnych
+  // ===========================================================================
+
+  /// Ustawia adresację modułu (nagłówek zapytań, sterowanie przepływem, filtr odbioru)
+  /// i wywołuje [body], a na końcu przywraca normalny tryb pracy adaptera.
+  Future<T> _withModule<T>(String requestId, String responseId, Future<T> Function() body) async {
+    await _sendCommand("ATFCSD300000");
+    await _sendCommand("ATFCSM1");
+    await _sendCommand("ATSH$requestId");
+    _activeHeader = requestId;
+    await _sendCommand("ATFCSH$requestId");
+    await _sendCommand("ATCRA$responseId");
+    try {
+      return await body();
+    } finally {
+      await _sendCommand("ATCRA");
+      await _sendCommand("ATFCSM0");
+      _customFlowControl = false;
+      _activeHeader = null;
+    }
+  }
+
+  /// Wysyła surową usługę UDS do już zaadresowanego modułu i zwraca odpowiedź
+  /// (bajty od bajtu usługi) albo null, gdy moduł nie odpowiedział poprawnie.
+  Future<List<int>?> _udsRaw(String responseId, String hexCmd, {Duration timeout = const Duration(seconds: 3)}) async {
+    final raw = await _sendCommand(hexCmd, timeout: timeout);
+    final resp = ElmParser.parse(raw, _bus).where((r) => r.ecu == responseId).firstOrNull;
+    return resp?.data;
+  }
+
+  /// Wynik odczytu jednego identyfikatora (DID) kodowania/adaptacji.
+  /// [bytes] = surowe dane (null gdy brak odczytu), [nrc] = kod odmowy UDS (0x7F).
+  Future<DidValue> _readDid(String responseId, int did) async {
+    final hi = (did >> 8).toRadixString(16).padLeft(2, '0').toUpperCase();
+    final lo = (did & 0xFF).toRadixString(16).padLeft(2, '0').toUpperCase();
+    final data = await _udsRaw(responseId, "22$hi$lo");
+    if (data == null || data.isEmpty) return DidValue(did, null, null);
+    if (data[0] == 0x7F) return DidValue(did, null, data.length >= 3 ? data[2] : 0x10);
+    // Odpowiedź: 62 <DID hi> <DID lo> <dane...>
+    if (data[0] == 0x62 && data.length >= 3) return DidValue(did, data.sublist(3), null);
+    return DidValue(did, null, null);
+  }
+
+  /// Odczytuje zestaw identyfikatorów kodowania/adaptacji z modułu (usługa 22).
+  /// Odczyt nie wymaga dostępu zabezpieczonego (Security Access) i nie zmienia stanu auta.
+  Future<ModuleCoding> readModuleCoding(
+    VagModule module, {
+    List<int> dids = CodingDids.standard,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    if (!canScanVagModules) return ModuleCoding(module, responded: false, values: const []);
+    return _withModule(module.requestId, module.responseId, () async {
+      // Rozszerzona sesja diagnostyczna — część modułów bez niej nie oddaje DID kodowania
+      await _udsRaw(module.responseId, "1003");
+      final values = <DidValue>[];
+      bool responded = false;
+      for (int i = 0; i < dids.length; i++) {
+        if (!_hasTransport) break;
+        onProgress?.call(i, dids.length);
+        final v = await _readDid(module.responseId, dids[i]);
+        if (v.bytes != null || v.nrc != null) responded = true;
+        if (v.bytes != null || v.nrc == 0x33 || v.nrc == 0x31) values.add(v);
+      }
+      onProgress?.call(dids.length, dids.length);
+      await _udsRaw(module.responseId, "1001"); // powrót do sesji domyślnej
+      return ModuleCoding(module, responded: responded, values: values);
+    });
+  }
+
+  /// Uniwersalny odczyt identyfikacji sterownika (działa na każdej marce na CAN).
+  /// Czyta standardowe identyfikatory F1xx oraz dodatkowe [extra] (np. BMW SVK),
+  /// bez dostępu zabezpieczonego. [requestId]/[responseId] domyślnie = ECU silnika.
+  Future<ModuleCoding> readEcuIdentification({
+    String? requestId,
+    String? responseId,
+    String moduleName = "Sterownik silnika",
+    List<int> dids = IdentificationDids.standard,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    final req = requestId ?? _engineHeader;
+    final resp = responseId ?? _engineEcu;
+    if (req == null || resp == null || !_isCan) {
+      return ModuleCoding(VagModule(moduleName, "", req ?? "", resp ?? ""), responded: false, values: const []);
+    }
+    return _withModule(req, resp, () async {
+      await _udsRaw(resp, "1003");
+      final values = <DidValue>[];
+      bool responded = false;
+      for (int i = 0; i < dids.length; i++) {
+        if (!_hasTransport) break;
+        onProgress?.call(i, dids.length);
+        final v = await _readDid(resp, dids[i]);
+        if (v.bytes != null || v.nrc != null) responded = true;
+        if (v.bytes != null) values.add(v);
+      }
+      onProgress?.call(dids.length, dids.length);
+      await _udsRaw(resp, "1001");
+      return ModuleCoding(VagModule(moduleName, "", req, resp), responded: responded, values: values);
+    });
+  }
+
+  /// Zapisuje wartość identyfikatora (usługa 2E) — używane do przywrócenia kopii.
+  /// Wiele modułów wymaga do zapisu dostępu zabezpieczonego; wtedy zwracamy kod
+  /// odmowy (np. 0x33), a niczego nie wymuszamy. Zwraca (sukces, kod NRC lub null).
+  Future<(bool, int?)> writeModuleDid(VagModule module, int did, List<int> bytes) async {
+    if (!canScanVagModules) return (false, null);
+    return _withModule(module.requestId, module.responseId, () async {
+      await _udsRaw(module.responseId, "1003");
+      final hi = (did >> 8).toRadixString(16).padLeft(2, '0').toUpperCase();
+      final lo = (did & 0xFF).toRadixString(16).padLeft(2, '0').toUpperCase();
+      final hexBytes = bytes.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join();
+      final data = await _udsRaw(module.responseId, "2E$hi$lo$hexBytes", timeout: const Duration(seconds: 5));
+      await _udsRaw(module.responseId, "1001");
+      if (data == null || data.isEmpty) return (false, null);
+      if (data[0] == 0x6E) return (true, null);
+      if (data[0] == 0x7F) return (false, data.length >= 3 ? data[2] : 0x10);
+      return (false, null);
+    });
+  }
+
   /// Odczytuje kody usterek z modułów VAG starszych platform (PQ) przez TP2.0 / KWP2000.
   /// Adapter jest na czas skanu przełączany na surowy CAN (protokół użytkownika B),
   /// a potem przywracany do normalnej pracy.
@@ -1368,4 +1490,117 @@ class ModuleScanResult {
   final String? identification;
 
   const ModuleScanResult(this.module, {required this.responded, required this.dtcs, this.identification});
+}
+
+/// Wartość jednego identyfikatora danych (DID) kodowania/adaptacji.
+class DidValue {
+  final int did;
+  final List<int>? bytes; // null, gdy odczyt się nie powiódł
+  final int? nrc;         // kod odmowy UDS (np. 0x33 = dostęp zabezpieczony)
+  const DidValue(this.did, this.bytes, this.nrc);
+
+  String get didHex => did.toRadixString(16).padLeft(4, '0').toUpperCase();
+  String get hex => bytes == null ? "" : bytes!.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
+  bool get readable => bytes != null;
+  String get label => CodingDids.names[did] ?? IdentificationDids.names[did] ?? "DID $didHex";
+}
+
+/// Odczytane kodowanie/adaptacje jednego modułu.
+class ModuleCoding {
+  final VagModule module;
+  final bool responded;
+  final List<DidValue> values;
+  const ModuleCoding(this.module, {required this.responded, required this.values});
+}
+
+/// Identyfikatory danych (DID) kodowania i adaptacji dostępne przez UDS bez
+/// dostępu zabezpieczonego. To wartości serwisowe — kopia zapasowa przed naprawą.
+class CodingDids {
+  static const int coding = 0x0600;          // kodowanie sterownika
+  static const int codingRepair = 0x0607;    // kodowanie (wersja do naprawy)
+  static const int longCoding = 0x0602;      // kodowanie długie
+  static const int vin = 0xF190;
+  static const int partNumberVag = 0xF187;   // numer części VAG
+  static const int hwNumber = 0xF191;        // numer sprzętu
+  static const int swVersion = 0xF189;       // wersja oprogramowania
+  static const int systemName = 0xF197;      // nazwa systemu
+  static const int asamData = 0xF19E;        // nazwa pliku ASAM/ODX
+  static const int programmingDate = 0xF199;
+  static const int fingerprint = 0xF15B;
+  static const int codingProtection = 0xF1DF;
+
+  /// Zestaw czytany domyślnie (identyfikacja + kodowanie).
+  static const List<int> standard = [
+    vin, partNumberVag, hwNumber, swVersion, systemName, asamData,
+    programmingDate, coding, longCoding, codingRepair, fingerprint,
+  ];
+
+  static const Map<int, String> names = {
+    coding: "Kodowanie sterownika",
+    codingRepair: "Kodowanie (naprawa)",
+    longCoding: "Kodowanie długie",
+    vin: "VIN",
+    partNumberVag: "Numer części",
+    hwNumber: "Numer sprzętu",
+    swVersion: "Wersja oprogramowania",
+    systemName: "Nazwa systemu",
+    asamData: "Plik danych (ASAM/ODX)",
+    programmingDate: "Data programowania",
+    fingerprint: "Odcisk (fingerprint)",
+    codingProtection: "Ochrona kodowania",
+  };
+
+  /// DID, które są tekstem ASCII (do czytelnego wyświetlenia).
+  static const Set<int> textual = {vin, partNumberVag, hwNumber, swVersion, systemName, asamData};
+}
+
+/// Standardowe identyfikatory odczytu (UDS 22) niezależne od marki, plus kilka
+/// znanych dla BMW (za dokumentacją UDS BMW). Sam odczyt, bez dostępu zabezpieczonego.
+class IdentificationDids {
+  // Standard ISO 14229 / 27145 (F1xx)
+  static const int vin = 0xF190;
+  static const int vehicleManufacturerEcuSw = 0xF188;
+  static const int systemSupplierEcuHw = 0xF191;
+  static const int systemSupplierEcuSw = 0xF189;
+  static const int ecuSerialNumber = 0xF18C;
+  static const int vehicleManufacturerSparePart = 0xF187;
+  static const int systemName = 0xF197;
+  static const int repairShopCode = 0xF198;
+  static const int calibrationId = 0xF186; // aktywna sesja/CALID zależnie od ECU
+  // BMW (z dokumentacji UDS BMW)
+  static const int bmwActiveSession = 0xF100;
+  static const int bmwCurrentSvk = 0xF101;   // readCurrentSVK
+  static const int bmwManufacturingData = 0xF18B;
+  static const int bmwSerialNumber = 0xF18C;
+  static const int bmwSgbdIndex = 0xF150;
+
+  static const List<int> standard = [
+    vin, vehicleManufacturerSparePart, systemSupplierEcuHw, systemSupplierEcuSw,
+    vehicleManufacturerEcuSw, ecuSerialNumber, systemName,
+  ];
+
+  /// Zestaw rozszerzony dla BMW (identyfikacja i wersje oprogramowania).
+  static const List<int> bmw = [
+    vin, bmwCurrentSvk, bmwManufacturingData, bmwSerialNumber, bmwSgbdIndex, systemName,
+  ];
+
+  static const Map<int, String> names = {
+    vin: "VIN",
+    vehicleManufacturerSparePart: "Numer części",
+    systemSupplierEcuHw: "Numer sprzętu",
+    systemSupplierEcuSw: "Wersja oprogramowania",
+    vehicleManufacturerEcuSw: "Wersja oprogramowania (producent)",
+    ecuSerialNumber: "Numer seryjny sterownika",
+    systemName: "Nazwa systemu",
+    repairShopCode: "Kod warsztatu",
+    calibrationId: "Identyfikator kalibracji",
+    bmwCurrentSvk: "SVK (wersje oprogramowania)",
+    bmwManufacturingData: "Dane produkcyjne",
+    bmwSgbdIndex: "Indeks SGBD",
+  };
+
+  static const Set<int> textual = {
+    vin, vehicleManufacturerSparePart, systemSupplierEcuHw, systemSupplierEcuSw,
+    vehicleManufacturerEcuSw, ecuSerialNumber, systemName, repairShopCode,
+  };
 }
