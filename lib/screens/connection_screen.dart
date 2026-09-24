@@ -1,0 +1,960 @@
+import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
+import 'package:provider/provider.dart';
+import '../models/dtc_code.dart';
+import '../models/vehicle_info.dart';
+import '../services/datalogger_service.dart';
+import '../services/obd_service.dart';
+import '../services/simulator_service.dart';
+import '../theme/app_theme.dart';
+
+class ConnectionScreen extends StatefulWidget {
+  const ConnectionScreen({super.key});
+
+  @override
+  State<ConnectionScreen> createState() => _ConnectionScreenState();
+}
+
+class _ConnectionScreenState extends State<ConnectionScreen> {
+  List<ScanResult> _scanResults = [];
+  bool _isScanning = false;
+  List<fbs.BluetoothDevice> _classicDevices = [];
+  bool _isLoadingClassic = false;
+  List<DtcCode>? _scannedDtcCodes;
+  bool _isLoadingDtc = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadClassicDevices();
+  }
+
+  void _loadClassicDevices() async {
+    setState(() => _isLoadingClassic = true);
+    try {
+      final devices = await fbs.FlutterBluetoothSerial.instance.getBondedDevices();
+      if (mounted) setState(() => _classicDevices = devices);
+    } catch (_) {}
+    if (mounted) setState(() => _isLoadingClassic = false);
+  }
+
+  void _startScan(ObdService obd) async {
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+
+    if (statuses[Permission.bluetoothScan]?.isDenied ?? false) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Brak uprawnien do skanowania Bluetooth')));
+      }
+      return;
+    }
+
+    setState(() {
+      _scanResults.clear();
+      _isScanning = true;
+    });
+
+    await obd.startScan(onResults: (results) {
+      if (mounted) {
+        setState(() {
+          _scanResults = results;
+        });
+      }
+    });
+
+    if (mounted) {
+      setState(() {
+        _isScanning = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final obd = Provider.of<ObdService>(context);
+    final logger = Provider.of<DataloggerService>(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Row(
+          children: [
+            Icon(Icons.bluetooth_connected, color: AppTheme.cyan),
+            SizedBox(width: 8),
+            Text("AutoCheck - Połączenie OBD"),
+          ],
+        ),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Karta aktualnego statusu
+            _buildStatusCard(obd),
+
+            // Karta Identyfikacji Pojazdu z ECU (VIN, Rocznik, Silnik, Sterownik)
+            if (obd.vehicleInfo != null) ...[
+              const SizedBox(height: 20),
+              _buildVehicleInfoCard(obd),
+            ],
+
+            const SizedBox(height: 20),
+
+            
+            // Sekcja vLinker / Wi-Fi
+            _buildWifiSection(obd),
+
+            const SizedBox(height: 24),
+
+            // Sekcja Classic Bluetooth (Sparowane)
+            _buildClassicBluetoothSection(obd),
+            
+            const SizedBox(height: 24),
+
+            // Sekcja vLinker MC+ / Bluetooth
+            _buildBluetoothSection(obd),
+
+            const SizedBox(height: 24),
+
+            // Sekcja Skanera Czujników Samochodu (ECU PID Discovery)
+            _buildPidScannerSection(obd),
+
+            const SizedBox(height: 24),
+
+            // Sekcja Diagnostyki Błędów Silnika (DTC / Check Engine)
+            _buildDtcScannerSection(obd),
+
+            const SizedBox(height: 24),
+
+            // Sekcja Wbudowanego Symulatora
+            _buildSimulatorSection(obd, logger),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusCard(ObdService obd) {
+    Color badgeColor;
+    IconData badgeIcon;
+
+    switch (obd.status) {
+      case ObdConnectionStatus.connected:
+        badgeColor = AppTheme.green;
+        badgeIcon = Icons.check_circle;
+        break;
+      case ObdConnectionStatus.simulated:
+        badgeColor = AppTheme.cyan;
+        badgeIcon = Icons.sports_motorsports;
+        break;
+      case ObdConnectionStatus.connecting:
+      case ObdConnectionStatus.initializing:
+      case ObdConnectionStatus.scanning:
+        badgeColor = AppTheme.yellow;
+        badgeIcon = Icons.sync;
+        break;
+      case ObdConnectionStatus.error:
+        badgeColor = AppTheme.red;
+        badgeIcon = Icons.error;
+        break;
+      case ObdConnectionStatus.disconnected:
+        badgeColor = AppTheme.textMuted;
+        badgeIcon = Icons.power_off;
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: badgeColor.withAlpha(120), width: 1.5),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            backgroundColor: badgeColor.withAlpha(40),
+            radius: 24,
+            child: Icon(badgeIcon, color: badgeColor, size: 28),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "STATUS POŁĄCZENIA",
+                  style: TextStyle(
+                    color: badgeColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.0,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  obd.statusMessage,
+                  style: const TextStyle(
+                    color: AppTheme.textPrimary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (obd.status == ObdConnectionStatus.connected || obd.status == ObdConnectionStatus.simulated)
+            IconButton(
+              icon: const Icon(Icons.close, color: AppTheme.red),
+              tooltip: "Rozłącz",
+              onPressed: () => obd.disconnect(),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWifiSection(ObdService obd) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.wifi, color: AppTheme.green, size: 20),
+            SizedBox(width: 8),
+            Text(
+              "Adapter ELM327 / vLinker (Wi-Fi)",
+              style: TextStyle(
+                color: AppTheme.textPrimary,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          "Wejdź w ustawienia Wi-Fi telefonu, połącz się z siecią adaptera (np. WiFi_OBDII) i kliknij przycisk poniżej.",
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+        ),
+        const SizedBox(height: 12),
+        ElevatedButton.icon(
+          onPressed: () => obd.connectWifi(),
+          icon: const Icon(Icons.wifi_tethering),
+          label: const Text("Połącz przez Wi-Fi"),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.green,
+            foregroundColor: Colors.white,
+            minimumSize: const Size.fromHeight(48),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildClassicBluetoothSection(ObdService obd) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.bluetooth_audio, color: AppTheme.blue, size: 20),
+            SizedBox(width: 8),
+            Text(
+              "Starsze adaptery (Classic Bluetooth / Android)",
+              style: TextStyle(
+                color: AppTheme.textPrimary,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          "Jeśli masz vLinker MC-Android lub zwykły ELM327 na starym Androidzie, najpierw sparuj go w ustawieniach systemu, a potem wybierz z listy poniżej.",
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+        ),
+        const SizedBox(height: 12),
+        if (_isLoadingClassic)
+          const CircularProgressIndicator()
+        else if (_classicDevices.isEmpty)
+          const Text("Brak sparowanych urządzeń. Sparuj w opcjach telefonu i zrestartuj apkę.", style: TextStyle(color: AppTheme.red))
+        else
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _classicDevices.length,
+            itemBuilder: (context, index) {
+              final d = _classicDevices[index];
+              return Card(
+                color: AppTheme.surfaceLight,
+                child: ListTile(
+                  leading: const Icon(Icons.bluetooth_connected, color: AppTheme.blue),
+                  title: Text(d.name ?? "Nieznane urządzenie", style: const TextStyle(color: Colors.white)),
+                  subtitle: Text(d.address, style: const TextStyle(color: AppTheme.textMuted)),
+                  trailing: ElevatedButton(
+                    onPressed: () => obd.connectClassic(d),
+                    style: ElevatedButton.styleFrom(backgroundColor: AppTheme.cyan, foregroundColor: Colors.black),
+                    child: const Text("Połącz"),
+                  ),
+                ),
+              );
+            },
+          ),
+      ],
+    );
+  }
+
+  Widget _buildBluetoothSection(ObdService obd) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.bluetooth, color: AppTheme.blue, size: 20),
+            SizedBox(width: 8),
+            Text(
+              "Adapter vLinker MC+ (Bluetooth / BLE)",
+              style: TextStyle(
+                color: AppTheme.textPrimary,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          "Włącz zapłon w samochodzie, wepnij vLinker MC+ do gniazda OBD-II i uruchom wyszukiwanie.",
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+        ),
+        const SizedBox(height: 12),
+        ElevatedButton.icon(
+          onPressed: _isScanning ? () => obd.stopScan() : () => _startScan(obd),
+          icon: _isScanning
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                )
+              : const Icon(Icons.search),
+          label: Text(_isScanning ? "Zatrzymaj szukanie" : "Wyszukaj vLinker MC+"),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppTheme.blue,
+            foregroundColor: Colors.white,
+            minimumSize: const Size.fromHeight(48),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+        if (_scanResults.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _scanResults.length,
+            itemBuilder: (context, index) {
+              final r = _scanResults[index];
+              final name = r.device.platformName.isNotEmpty ? r.device.platformName : "Nieznane urządzenie OBD";
+              final isVlinker = name.toLowerCase().contains("vlinker") ||
+                  name.toLowerCase().contains("obd") ||
+                  name.toLowerCase().contains("v-link");
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  color: isVlinker ? AppTheme.blue.withAlpha(25) : AppTheme.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isVlinker ? AppTheme.cyan : AppTheme.border,
+                    width: isVlinker ? 1.5 : 1,
+                  ),
+                ),
+                child: ListTile(
+                  leading: Icon(
+                    Icons.bluetooth,
+                    color: isVlinker ? AppTheme.cyan : AppTheme.textMuted,
+                  ),
+                  title: Text(
+                    name,
+                    style: TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontWeight: isVlinker ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                  subtitle: Text(
+                    r.device.remoteId.str,
+                    style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
+                  ),
+                  trailing: ElevatedButton(
+                    onPressed: () => obd.connectDevice(r.device),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: isVlinker ? AppTheme.cyan : AppTheme.surfaceLight,
+                      foregroundColor: isVlinker ? Colors.black : Colors.white,
+                    ),
+                    child: const Text("Połącz"),
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildPidScannerSection(ObdService obd) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.sensors, color: AppTheme.orange, size: 20),
+                  SizedBox(width: 8),
+                  Text(
+                    "Czujniki Pojazdu (ECU)",
+                    style: TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppTheme.orange.withAlpha(30),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  "${obd.discoveredPids.length} wykrytych",
+                  style: const TextStyle(
+                    color: AppTheme.orange,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            "AutoCheck skanuje sterownik silnika (Mode 01 PID 00, 20, 40) i udostępnia tylko te parametry, które fizycznie obsługuje Twoje auto.",
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: obd.discoveredPids.map((pid) {
+              return Chip(
+                backgroundColor: AppTheme.surfaceLight,
+                side: const BorderSide(color: AppTheme.border),
+                label: Text(
+                  "${pid.shortName} (${pid.unit})",
+                  style: TextStyle(
+                    color: Color(pid.colorValue),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSimulatorSection(ObdService obd, DataloggerService logger) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.cyan.withAlpha(80)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.sports_motorsports, color: AppTheme.cyan, size: 20),
+              SizedBox(width: 8),
+              Text(
+                "Wbudowany Symulator Jazdy & Usterek",
+                style: TextStyle(
+                  color: AppTheme.textPrimary,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            "Pozwala przetestować działanie wykresów, logowanie i algorytmy diagnostyczne w domu bez podłączania samochodu.",
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+          ),
+          const SizedBox(height: 14),
+          DropdownButtonFormField<SimScenario>(
+            initialValue: obd.selectedScenario,
+            dropdownColor: AppTheme.surfaceLight,
+            decoration: InputDecoration(
+              labelText: "Wybierz scenariusz testowy",
+              labelStyle: const TextStyle(color: AppTheme.cyan),
+              filled: true,
+              fillColor: AppTheme.surfaceLight,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            items: SimScenario.values.map((s) {
+              return DropdownMenuItem(
+                value: s,
+                child: Text(
+                  s.title,
+                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              );
+            }).toList(),
+            onChanged: (val) {
+              if (val != null) {
+                obd.selectedScenario = val;
+              }
+            },
+          ),
+          const SizedBox(height: 8),
+          Text(
+            obd.selectedScenario.description,
+            style: const TextStyle(color: AppTheme.textMuted, fontSize: 12, fontStyle: FontStyle.italic),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    obd.connectSimulator(obd.selectedScenario);
+                    logger.loadDemoRun(obd.selectedScenario);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text("Załadowano log demonstracyjny: ${obd.selectedScenario.title}"),
+                        backgroundColor: AppTheme.cyan,
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.analytics),
+                  label: const Text("Pokaż wykres logu"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.cyan,
+                    foregroundColor: Colors.black,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    obd.connectSimulator(obd.selectedScenario);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("Włączono symulator na żywo. Przejdź do zakładki 'Rejestrator' i kliknij START!"),
+                        backgroundColor: AppTheme.green,
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text("Symuluj na żywo"),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.green,
+                    side: const BorderSide(color: AppTheme.green),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDtcScannerSection(ObdService obd) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.red.withAlpha(90)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.troubleshoot, color: AppTheme.red, size: 20),
+                  SizedBox(width: 8),
+                  Text(
+                    "Odczyt Błędów Silnika (DTC)",
+                    style: TextStyle(
+                      color: AppTheme.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              if (_scannedDtcCodes != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: _scannedDtcCodes!.isEmpty
+                        ? AppTheme.green.withAlpha(30)
+                        : AppTheme.red.withAlpha(30),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    "${_scannedDtcCodes!.length} błędów",
+                    style: TextStyle(
+                      color: _scannedDtcCodes!.isEmpty ? AppTheme.green : AppTheme.red,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            "Odczytuje zarejestrowane błędy z pamięci komputera ECU (np. błąd ciśnienia paliwa P0087, wypadanie zapłonów P0301).",
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _isLoadingDtc
+                      ? null
+                      : () async {
+                          setState(() => _isLoadingDtc = true);
+                          final codes = await obd.readDtcCodes();
+                          if (mounted) {
+                            setState(() {
+                              _scannedDtcCodes = codes;
+                              _isLoadingDtc = false;
+                            });
+                          }
+                        },
+                  icon: _isLoadingDtc
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.search),
+                  label: const Text("Odczytaj kody błędów"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.red,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final ok = await obd.clearDtcCodes();
+                  if (mounted) {
+                    setState(() => _scannedDtcCodes = []);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(ok ? "Wysłano polecenie skasowania błędów (Check Engine zgaszony)." : "Błąd kasowania"),
+                        backgroundColor: AppTheme.green,
+                      ),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.delete_outline, size: 18),
+                label: const Text("Skasuj"),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textMuted,
+                  side: const BorderSide(color: AppTheme.border),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ],
+          ),
+          if (_scannedDtcCodes != null) ...[
+            const SizedBox(height: 12),
+            if (_scannedDtcCodes!.isEmpty)
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppTheme.green.withAlpha(20),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppTheme.green.withAlpha(80)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.check_circle, color: AppTheme.green, size: 20),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        "Brak zarejestrowanych kodów usterek w pamięci ECU.",
+                        style: TextStyle(color: AppTheme.green, fontSize: 13, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _scannedDtcCodes!.length,
+                itemBuilder: (context, idx) {
+                  final dtc = _scannedDtcCodes![idx];
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppTheme.surfaceLight,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppTheme.red.withAlpha(120)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: AppTheme.red,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                dtc.code,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                  fontFamily: "monospace",
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                dtc.title,
+                                style: const TextStyle(
+                                  color: AppTheme.textPrimary,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          dtc.description,
+                          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          "Prawdopodobne przyczyny usterki:",
+                          style: TextStyle(color: AppTheme.cyan, fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 2),
+                        ...dtc.commonCauses.map((c) => Padding(
+                              padding: const EdgeInsets.only(bottom: 2),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text("• ", style: TextStyle(color: AppTheme.cyan, fontSize: 12)),
+                                  Expanded(
+                                    child: Text(c, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 11)),
+                                  ),
+                                ],
+                              ),
+                            )),
+                      ],
+                    ),
+                  );
+                },
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVehicleInfoCard(ObdService obd) {
+    final VehicleInfo? v = obd.vehicleInfo;
+    if (v == null) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.cyan.withAlpha(140), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.cyan.withAlpha(20),
+            blurRadius: 10,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: AppTheme.cyan.withAlpha(35),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.directions_car, color: AppTheme.cyan, size: 26),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "${v.manufacturer} ${v.modelName}",
+                      style: const TextStyle(
+                        color: AppTheme.textPrimary,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "Rocznik modelowy: ${v.year} • ${v.countryOfOrigin}",
+                      style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.sync, color: AppTheme.cyan, size: 22),
+                tooltip: "Odśwież dane pojazdu z ECU (Mode 09)",
+                onPressed: () async {
+                  await obd.readVehicleInfo();
+                  if (mounted) setState(() {});
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Divider(color: AppTheme.border),
+          const SizedBox(height: 10),
+
+          // Numer VIN
+          _buildInfoRow(
+            icon: Icons.fingerprint,
+            label: "Numer VIN",
+            value: v.vin,
+            valueColor: AppTheme.cyan,
+            isMonospace: true,
+          ),
+          const SizedBox(height: 8),
+
+          // Silnik
+          _buildInfoRow(
+            icon: Icons.engineering,
+            label: "Jednostka napędowa",
+            value: v.engineDescription,
+          ),
+          const SizedBox(height: 8),
+
+          // Sterownik ECU & CALID
+          _buildInfoRow(
+            icon: Icons.memory,
+            label: "Sterownik silnika",
+            value: "${v.ecuName} (Soft: ${v.calibrationId})",
+            valueColor: AppTheme.purple,
+          ),
+          const SizedBox(height: 8),
+
+          // Napięcie i protokół OBD
+          _buildInfoRow(
+            icon: Icons.bolt,
+            label: "Napięcie / Protokół",
+            value: "${v.batteryVoltage.toStringAsFixed(1)} V  •  ${v.obdProtocol}",
+            valueColor: AppTheme.green,
+          ),
+          const SizedBox(height: 8),
+
+          // Dystans od kasowania błędów
+          _buildInfoRow(
+            icon: Icons.history,
+            label: "Dystans od kasowania DTC",
+            value: "${v.distanceSinceDtcClearedKm} km  ${v.distanceWithMilOnKm > 0 ? '(Z błędem: ${v.distanceWithMilOnKm} km)' : '(Brak aktywnego błędu MIL)'}",
+            valueColor: v.distanceSinceDtcClearedKm < 50 ? AppTheme.orange : AppTheme.textSecondary,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    Color? valueColor,
+    bool isMonospace = false,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: AppTheme.textMuted),
+        const SizedBox(width: 8),
+        Text(
+          "$label: ",
+          style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(
+              color: valueColor ?? AppTheme.textPrimary,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              fontFamily: isMonospace ? 'monospace' : null,
+              letterSpacing: isMonospace ? 1.0 : 0.0,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}

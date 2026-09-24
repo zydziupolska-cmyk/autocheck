@@ -1,0 +1,8 @@
+"Name", "ShortName", "ModeAndPID", "Equation", "Min Value", "Max Value", "Units", "Header", "startDiagnostic", "stopDiagnostic", "Scale"
+"Actual Boost Pressure","BoostAct","0x22F40C","(A*256+B)*0.01",0,3000,"mbar","6F1","","",1
+"Target Boost Pressure","BoostTgt","0x22F40D","(A*256+B)*0.01",0,3000,"mbar","6F1","","",1
+"Actual Rail Pressure","RailAct","0x22F423","(A*256+B)*0.1",0,2500,"bar","6F1","","",1
+"Target Rail Pressure","RailTgt","0x22F424","(A*256+B)*0.1",0,2500,"bar","6F1","","",1
+"DPF Soot Mass","DpfSoot","0x22F45B","A*0.1",0,100,"g","6F1","","",1
+"Exhaust Gas Temp Before DPF","EGT1","0x22F435","(A*256+B)*0.1-40",-40,1000,"°C","6F1","","",1
+"Transmission Fluid Temp","TransTemp","0x22051A","A-40",-40,215,"°C","7E1","","",1
