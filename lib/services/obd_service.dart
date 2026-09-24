@@ -59,6 +59,9 @@ class ObdService extends ChangeNotifier {
   String? _activeHeader; // ostatnio ustawiony ATSH
   bool _responseCountSupported = false;
   bool _multiPidSupported = false;
+  String? _stnId; // np. "STN2120 v5.6.19" — adapter obsługuje komendy ST
+  bool _stpxSupported = false;
+  final Map<String, String> _adapterInfo = {};
   int _multiPidFailures = 0;
   Set<int> _supportedPids = {};
   Set<int> _supportedMode06 = {};
@@ -316,6 +319,9 @@ class ObdService extends ChangeNotifier {
       _responseCountSupported = false;
       _multiPidSupported = false;
       _multiPidFailures = 0;
+      _stnId = null;
+      _stpxSupported = false;
+      _adapterInfo.clear();
       _supportedPids = {};
       _supportedMode06 = {};
       _udsPressureScale.clear();
@@ -473,8 +479,15 @@ class ObdService extends ChangeNotifier {
 
     // Liczba oczekiwanych odpowiedzi — adapter kończy od razu po pierwszej
     // zamiast czekać na timeout magistrali (kilkukrotnie szybsze logowanie).
-    final useCount = singleFrame && !broadcast && _responseCountSupported && targetHeader != null;
-    final raw = await _sendCommand(useCount ? "${cmd}1" : cmd, timeout: timeout);
+    final String wire;
+    if (_stpxSupported && !broadcast && targetHeader != null) {
+      // Jeden sterownik → dokładnie jedna odpowiedź (także wieloramkowa)
+      wire = "STPX D:$cmd,R:1";
+    } else {
+      final useCount = singleFrame && !broadcast && _responseCountSupported && targetHeader != null;
+      wire = useCount ? "${cmd}1" : cmd;
+    }
+    final raw = await _sendCommand(wire, timeout: timeout);
     final responses = ElmParser.parse(raw, _bus);
 
     if (!broadcast && header == null && _engineEcu != null) {
@@ -496,17 +509,32 @@ class ObdService extends ChangeNotifier {
     if (!_hasTransport) return false;
 
     await _sendCommand("ATE0"); // echo off
-    await _sendCommand("ATL0"); // bez dodatkowych LF
-    await _sendCommand("ATS1"); // spacje między bajtami
-    await _sendCommand("ATH1"); // nagłówki ON — rozróżniamy sterowniki
-    await _sendCommand("ATAT1"); // adaptacyjny timeout
+    // Protokół przed formatowaniem: niektóre adaptery (np. vLinker FS i klony) po ATSP
+    // przywracają domyślne formatowanie, a wtedy znikałyby nagłówki sterowników
     await _sendCommand("ATSP0"); // automatyczny wybór protokołu
+    await _applyFormatting();
     _adapterId = (await _sendCommand("ATI")).replaceAll("\n", " ").trim();
+    _adapterInfo["ATI (identyfikator)"] = _adapterId;
+    _adapterInfo["AT@1 (opis urządzenia)"] = (await _sendCommand("AT@1")).replaceAll("\n", " ").trim();
+
+    // Komendy rozszerzone ST (układ STN — vLinker, OBDLink): identyfikacja
+    final sti = (await _sendCommand("STI")).replaceAll("\n", " ").trim();
+    if (sti.isNotEmpty && !sti.contains("?")) {
+      _stnId = sti;
+      _adapterInfo["STI (układ STN)"] = sti;
+      final stdi = (await _sendCommand("STDI")).replaceAll("\n", " ").trim();
+      if (stdi.isNotEmpty && !stdi.contains("?")) _adapterInfo["STDI (sprzęt)"] = stdi;
+    } else {
+      _adapterInfo["STI (układ STN)"] = "brak — zwykły ELM327";
+    }
 
     _updateStatus(ObdConnectionStatus.initializing, "Wyszukiwanie protokołu OBD (do 20 s)...");
     final raw0100 = await _sendCommand("0100", timeout: const Duration(seconds: 20));
     _bus = ElmParser.busFromProtocolNumber(await _sendCommand("ATDPN"));
     _protocolName = (await _sendCommand("ATDP")).trim();
+    _adapterInfo["Protokół"] = _protocolName;
+    // Po wyszukaniu protokołu formatowanie jeszcze raz — na wypadek resetu przez adapter
+    await _applyFormatting();
 
     final responses = ElmParser.parse(raw0100, _bus).where((r) => r.matches(0x41, [0x00])).toList();
     if (responses.isEmpty) {
@@ -564,6 +592,14 @@ class ObdService extends ChangeNotifier {
       _responseCountSupported = ElmParser.parse(raw, _bus).any((r) => r.matches(0x41, [0x00]));
     }
 
+    // STPX (komenda STN): wysłanie z liczbą oczekiwanych odpowiedzi — działa także dla
+    // odpowiedzi wieloramkowych, więc adapter nie czeka na timeout magistrali przy żadnym zapytaniu
+    if (_stnId != null && _isCan && _engineHeader != null) {
+      await _setHeader(_engineHeader!);
+      final raw = await _sendCommand("STPX D:0100,R:1");
+      _stpxSupported = ElmParser.parse(raw, _bus).any((r) => r.matches(0x41, [0x00]));
+    }
+
     // Kilka PIDów w jednym zapytaniu (SAE J1979 na CAN pozwala do 6) — kilkukrotnie
     // szybsze logowanie. Sprawdzamy na obrotach i prędkości (obsługuje je prawie każde auto).
     if (_isCan && _supportedPids.contains(0x0C) && _supportedPids.contains(0x0D)) {
@@ -594,6 +630,12 @@ class ObdService extends ChangeNotifier {
       _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie zaimportowanych definicji (${importedPids.length})...");
       await _probeImported();
     }
+
+    _adapterInfo["Sterownik silnika"] = _engineEcu ?? "—";
+    _adapterInfo["Szybkie zapytania STPX"] = _stpxSupported ? "tak" : "nie";
+    _adapterInfo["Kilka PID-ów w zapytaniu"] = _multiPidSupported ? "tak" : "nie";
+    _adapterInfo["Liczba odpowiedzi (np. 010C1)"] = _responseCountSupported ? "tak" : "nie";
+    _adapterInfo["Obsługiwane PID-y Mode 01"] = "${_supportedPids.length}";
 
     if (!_hasTransport) return false;
     final ecuTxt = _engineEcu != null ? " | ECU $_engineEcu" : "";
@@ -898,6 +940,19 @@ class ObdService extends ChangeNotifier {
   }
 
   bool get multiPidEnabled => _multiPidSupported;
+  bool get stpxEnabled => _stpxSupported;
+  String? get stnId => _stnId;
+
+  /// Szczegóły adaptera i wykrytych możliwości (do ekranu informacji i zgłoszeń problemów).
+  Map<String, String> get adapterInfo => Map.unmodifiable(_adapterInfo);
+
+  Future<void> _applyFormatting() async {
+    await _sendCommand("ATL0"); // bez dodatkowych LF
+    await _sendCommand("ATS1"); // spacje między bajtami
+    await _sendCommand("ATH1"); // nagłówki ON — rozróżniamy sterowniki
+    await _sendCommand("ATCAF1"); // automatyczne formatowanie ISO-TP
+    await _sendCommand("ATAT1"); // adaptacyjny timeout
+  }
 
   // ===========================================================================
   // Skan wszystkich modułów VAG (UDS)

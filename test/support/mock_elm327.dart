@@ -26,7 +26,14 @@ class MockElm327 {
   final MockBus bus;
   final bool petrol;
 
-  MockElm327({this.bus = MockBus.can11, this.petrol = false});
+  /// Adapter z układem STN (komendy ST: STI, STDI, STPX) — np. vLinker, OBDLink.
+  final bool stn;
+
+  /// Zachowanie części klonów (np. vLinker FS): ATSP przywraca domyślne formatowanie
+  /// (nagłówki i spacje wyłączone).
+  final bool resetsFormattingOnProtocol;
+
+  MockElm327({this.bus = MockBus.can11, this.petrol = false, this.stn = false, this.resetsFormattingOnProtocol = false});
 
   late final ServerSocket _server;
   final List<String> receivedCommands = [];
@@ -78,8 +85,13 @@ class MockElm327 {
 
   static const vin = "WVGZZZ1TZFW011407";
 
-  static Future<MockElm327> start({MockBus bus = MockBus.can11, bool petrol = false}) async {
-    final mock = MockElm327(bus: bus, petrol: petrol);
+  static Future<MockElm327> start({
+    MockBus bus = MockBus.can11,
+    bool petrol = false,
+    bool stn = false,
+    bool resetsFormattingOnProtocol = false,
+  }) async {
+    final mock = MockElm327(bus: bus, petrol: petrol, stn: stn, resetsFormattingOnProtocol: resetsFormattingOnProtocol);
     mock._server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     mock._server.listen(mock._handleClient);
     return mock;
@@ -120,6 +132,14 @@ class MockElm327 {
 
   String _body(String cmd) {
     if (cmd.startsWith("AT")) return _atCommand(cmd.substring(2));
+    if (cmd.startsWith("ST")) {
+      if (!stn) return "?";
+      if (cmd == "STI") return "STN2255 v5.10.3";
+      if (cmd == "STDI") return "vLinker MC+ (emulator)";
+      final m = RegExp(r'^STPXD:([0-9A-F]+)(?:,R:(\d+))?$').firstMatch(cmd);
+      if (m != null) return _body(m.group(1)!);
+      return "?";
+    }
 
     var obd = cmd;
     if (!RegExp(r'^[0-9A-F]+$').hasMatch(obd)) return "?";
@@ -185,6 +205,10 @@ class MockElm327 {
     }
     if (at == "RV") return "14.5V";
     if (at.startsWith("SH")) _header = at.substring(2);
+    if (at.startsWith("SP") && resetsFormattingOnProtocol) {
+      _headers = false;
+      _spaces = false;
+    }
     return "OK";
   }
 

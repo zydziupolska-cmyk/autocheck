@@ -370,4 +370,50 @@ void main() {
       expect(service.multiPidEnabled, isFalse);
     });
   });
+
+  group('adapter STN (vLinker, OBDLink)', () {
+    test('wykrywa STN i używa STPX — także dla odpowiedzi wieloramkowych', () async {
+      final car = await MockElm327.start(stn: true);
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      expect(await service.connectWifi(ip: "127.0.0.1", port: car.port), isTrue, reason: service.statusMessage);
+      expect(service.stnId, "STN2255 v5.10.3");
+      expect(service.stpxEnabled, isTrue);
+      expect(service.adapterInfo["STDI (sprzęt)"], "vLinker MC+ (emulator)");
+
+      car.targetKpa = 239;
+      car.mapKpa = 159;
+      final before = car.receivedCommands.length;
+      final v = await service.readPids(service.discoveredPids.where((p) => ["RPM", "BOOST", "TARGET_BOOST"].contains(p.shortName)).toList());
+      final sent = car.receivedCommands.sublist(before);
+      expect(sent.every((c) => c.startsWith("STPX") || c.startsWith("AT")), isTrue, reason: sent.join(", "));
+      expect(v["RPM"], closeTo(850, 0.01));
+      expect(v["TARGET_BOOST"], closeTo(1.40, 0.01));
+      // VIN (wieloramkowy) przez STPX też poprawny
+      expect(service.vehicleInfo!.vin, MockElm327.vin);
+    });
+
+    test('zwykły ELM327: STI → „?”, bez STPX', () async {
+      await connect();
+      expect(obd.stnId, isNull);
+      expect(obd.stpxEnabled, isFalse);
+      expect(obd.adapterInfo["STI (układ STN)"], contains("zwykły ELM327"));
+    });
+
+    test('adapter resetujący formatowanie po ATSP (jak vLinker FS): nagłówki nadal działają, brak fikcyjnego C0300', () async {
+      final car = await MockElm327.start(resetsFormattingOnProtocol: true);
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      expect(await service.connectWifi(ip: "127.0.0.1", port: car.port), isTrue, reason: service.statusMessage);
+      expect(service.engineEcuAddress, "7E8");
+      expect(await service.readDtcCodes(), isEmpty);
+      expect(service.vehicleInfo!.ecuName, "ECM-EngineControl");
+    });
+  });
 }

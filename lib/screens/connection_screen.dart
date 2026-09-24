@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
@@ -101,6 +102,45 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         AppTheme.red,
       );
     }
+  }
+
+  void _showAdapterInfo(ObdService obd) {
+    final info = obd.adapterInfo;
+    final text = info.entries.map((e) => "${e.key}: ${e.value}").join("\n");
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Text("Adapter i możliwości", style: TextStyle(color: AppTheme.textPrimary)),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final e in info.entries)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text.rich(TextSpan(children: [
+                    TextSpan(text: "${e.key}: ", style: const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+                    TextSpan(text: e.value, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12, fontWeight: FontWeight.w600)),
+                  ])),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: text));
+              Navigator.pop(ctx);
+              _showSnack("Skopiowano informacje o adapterze", AppTheme.green);
+            },
+            child: const Text("Kopiuj"),
+          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Zamknij")),
+        ],
+      ),
+    );
   }
 
   Future<void> _scanVagModules(ObdService obd) async {
@@ -285,8 +325,16 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 if (obd.status == ObdConnectionStatus.connected && obd.adapterId.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(
-                    "Adapter: ${obd.adapterId}${obd.protocolName.isNotEmpty ? ' • ${obd.protocolName}' : ''}",
+                    "Adapter: ${obd.stnId ?? obd.adapterId}${obd.protocolName.isNotEmpty ? ' • ${obd.protocolName}' : ''}",
                     style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
+                  ),
+                  GestureDetector(
+                    onTap: () => _showAdapterInfo(obd),
+                    child: const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text("Szczegóły adaptera ›",
+                          style: TextStyle(color: AppTheme.cyan, fontSize: 12, fontWeight: FontWeight.w600)),
+                    ),
                   ),
                 ],
               ],
