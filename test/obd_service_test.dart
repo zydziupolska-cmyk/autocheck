@@ -433,4 +433,20 @@ void main() {
       expect(service.vehicleInfo!.ecuName, "ECM-EngineControl");
     });
   });
+
+  test('wybór profilu logowania zaznacza się (filtruje kanały do dostępnych)', () async {
+    await connect();
+    final logger = DataloggerService(obdService: obd, persistHistory: false);
+    addTearDown(logger.dispose);
+    final preset = LoggingPreset.presets.first;
+    logger.applyPreset(preset);
+    expect(logger.isPresetApplied(preset), isTrue);
+    // Wybór zawiera tylko kanały, które auto naprawdę udostępnia
+    final available = obd.discoveredPids.map((p) => p.shortName).toSet();
+    expect(logger.selectedPidKeys.every(available.contains), isTrue);
+    // Inny profil nie jest oznaczony jako aktywny
+    if (LoggingPreset.presets.length > 1) {
+      expect(logger.isPresetApplied(LoggingPreset.presets[1]), isFalse);
+    }
+  });
 }

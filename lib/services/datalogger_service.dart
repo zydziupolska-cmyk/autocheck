@@ -174,12 +174,25 @@ class DataloggerService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void applyPreset(LoggingPreset preset) {
+  /// Kanały profilu przefiltrowane do tych, które auto naprawdę udostępnia
+  /// (w dieslu bez TPS, jeśli jest pedał). To samo, co ustawia [applyPreset].
+  Set<String> _presetSelection(LoggingPreset preset) {
     final available = obdService.discoveredPids.map((p) => p.shortName).toSet();
     final filtered = preset.pidShortNames.where(available.contains).toSet();
     if (_isDiesel && filtered.contains("PEDAL")) filtered.remove("TPS");
-    _selectedPidKeys = filtered.isNotEmpty ? filtered : {"RPM"};
+    return filtered.isNotEmpty ? filtered : {"RPM"};
+  }
+
+  void applyPreset(LoggingPreset preset) {
+    _selectedPidKeys = _presetSelection(preset);
     notifyListeners();
+  }
+
+  /// Czy aktualny wybór kanałów dokładnie odpowiada temu profilowi (po odfiltrowaniu
+  /// kanałów nieobsługiwanych przez auto).
+  bool isPresetApplied(LoggingPreset preset) {
+    final target = _presetSelection(preset);
+    return target.length == _selectedPidKeys.length && target.every(_selectedPidKeys.contains);
   }
 
   /// Rozpoczyna nagrywanie. W trybie przyspieszenia rejestrator „uzbraja się”

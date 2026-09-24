@@ -59,8 +59,10 @@ class AnomalyEngine {
     _checkMisfireRootCause(points, anomalies);
 
 
-    // 8. Analiza falowania obrotów i drgań na biegu jałowym (np. Peugeot 2.0 / EVAP / MAP)
-    _checkIdleHunting(points, anomalies);
+    // 8. Analiza falowania obrotów i drgań na biegu jałowym (benzyna: EVAP / MAP / cewki).
+    //    W dieslu bieg jałowy naturalnie faluje z obciążeniem, a przyczyny są inne —
+    //    ta reguła (korekty STFT, EVAP) dotyczy tylko silników benzynowych.
+    if (!isDiesel) _checkIdleHunting(points, anomalies);
 
     // 9. Analiza zacięcia zmiennych faz rozrządu VVT / utraty podciśnienia w kolektorze (P0011)
     if (!isDiesel) _checkVvtJamming(points, anomalies);

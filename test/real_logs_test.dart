@@ -35,4 +35,16 @@ void main() {
       expect(a.endRpm, greaterThanOrEqualTo(4000));
     });
   }
+
+  test('Diesel: falowanie na jałowym nie daje benzynowej diagnozy EVAP/EW10', () {
+    final pts = loadCsv("test/fixtures/diesel_drive_idle.csv");
+    final anomalies = AnomalyEngine.analyzeSession(pts, isDiesel: true);
+    // Reguła biegu jałowego jest benzynowa (EVAP, cewki, EW10) — nie może odpalić na dieslu
+    expect(anomalies.where((a) => a.id.startsWith("idle_hunting_")), isEmpty);
+    for (final a in anomalies) {
+      final text = "${a.title} ${a.rootCauseConclusion ?? ''} ${a.hypotheses.join(' ')}".toLowerCase();
+      expect(text.contains("evap"), isFalse, reason: "benzynowa usterka na dieslu: ${a.title}");
+      expect(text.contains("ew10"), isFalse, reason: "benzynowa usterka na dieslu: ${a.title}");
+    }
+  });
 }

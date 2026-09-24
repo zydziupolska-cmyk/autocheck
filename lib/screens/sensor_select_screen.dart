@@ -117,8 +117,7 @@ class SensorSelectScreen extends StatelessWidget {
             if (i > 0) const Divider(),
             Builder(builder: (context) {
               final preset = presets[i];
-              final isApplied = preset.pidShortNames.every((p) => logger.selectedPidKeys.contains(p)) &&
-                  preset.pidShortNames.length == logger.selectedPidKeys.length;
+              final isApplied = logger.isPresetApplied(preset);
               return InkWell(
                 onTap: isApplied ? null : () => logger.applyPreset(preset),
                 child: Padding(
