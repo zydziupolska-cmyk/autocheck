@@ -79,6 +79,15 @@ class MockElm327 {
   /// Dodatkowe identyfikatory UDS (usługa 22) sterownika silnika: "1234" → bajty danych.
   final Map<String, List<int>> udsDids = {};
 
+  /// Ruch na magistrali oddawany w trybie podsłuchu (ATMA/STMA) — linie jak z adaptera.
+  final List<String> monitorTraffic = [];
+  /// Po tylu liniach adapter zgłasza BUFFER FULL i wraca do '>' (raz).
+  int? monitorBufferFullAfter;
+  bool _monitoring = false;
+  int _monitorPos = 0;
+  int _monitorStarts = 0;
+  int get monitorStarts => _monitorStarts;
+
   /// Czy sterownik obsługuje zapytania o kilka PIDów naraz (większość aut na CAN tak).
   bool multiPidSupported = true;
 
@@ -121,10 +130,29 @@ class MockElm327 {
     client.done.catchError((_) => null);
     client.listen(onError: (_) {}, (data) async {
       buffer += latin1.decode(data);
+      if (_monitoring && buffer.isNotEmpty) {
+        // Dowolny znak przerywa podsłuch; sam znak jest pomijany
+        _monitoring = false;
+        buffer = buffer.substring(1);
+        try {
+          client.add(latin1.encode("STOPPED\r\r>"));
+          await client.flush();
+        } catch (_) {
+          return;
+        }
+      }
       while (buffer.contains("\r")) {
         final idx = buffer.indexOf("\r");
         final cmd = buffer.substring(0, idx);
         buffer = buffer.substring(idx + 1);
+        final norm = cmd.replaceAll(" ", "").toUpperCase();
+        if (norm == "ATMA" || (stn && norm == "STMA")) {
+          receivedCommands.add(norm);
+          _monitoring = true;
+          _monitorStarts++;
+          _streamMonitor(client);
+          continue;
+        }
         final response = _respond(cmd);
         // Wysyłaj w kawałkach po 20 bajtów (jak notyfikacje BLE)
         final bytes = latin1.encode(response);
@@ -138,6 +166,24 @@ class MockElm327 {
         }
       }
     });
+  }
+
+  Future<void> _streamMonitor(Socket client) async {
+    try {
+      while (_monitoring && _monitorPos < monitorTraffic.length) {
+        final limit = monitorBufferFullAfter;
+        if (limit != null && _monitorPos == limit) {
+          monitorBufferFullAfter = null;
+          _monitoring = false;
+          client.add(latin1.encode("BUFFER FULL\r\r>"));
+          await client.flush();
+          return;
+        }
+        client.add(latin1.encode("${monitorTraffic[_monitorPos++]}\r"));
+        await client.flush();
+        await Future.delayed(const Duration(milliseconds: 1));
+      }
+    } catch (_) {}
   }
 
   String _respond(String rawCmd) {

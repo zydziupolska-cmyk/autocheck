@@ -8,6 +8,7 @@ import '../models/dtc_code.dart';
 import '../models/vehicle_info.dart';
 import '../services/obd_service.dart';
 import '../theme/app_theme.dart';
+import 'learning_screen.dart';
 
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({super.key});
@@ -744,6 +745,21 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppTheme.cyan,
                   side: const BorderSide(color: AppTheme.cyan),
+                ),
+              ),
+            ),
+          ],
+          if (obd.status == ObdConnectionStatus.connected) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LearningScreen())),
+                icon: const Icon(Icons.hearing, size: 18),
+                label: const Text("Nauka od testera (podsłuch Autela)"),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.purple,
+                  side: const BorderSide(color: AppTheme.purple),
                 ),
               ),
             ),

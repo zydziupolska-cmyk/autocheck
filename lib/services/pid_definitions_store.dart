@@ -11,6 +11,11 @@ class PidDefinitionsStore extends ChangeNotifier {
   final ObdService obd;
   final bool persist;
   final Map<String, TorqueImportResult> _files = {};
+  final Map<String, String> _raw = {};
+
+  /// Plik z parametrami nauczonymi z podsłuchu (Moja biblioteka).
+  static const libraryFile = "moja_biblioteka.csv";
+  static const _csvHeader = "Name,ShortName,ModeAndPID,Equation,Min Value,Max Value,Units,Header";
 
   PidDefinitionsStore({required this.obd, this.persist = true}) {
     if (persist) _load();
@@ -32,7 +37,9 @@ class PidDefinitionsStore extends ChangeNotifier {
       await for (final f in dir.list()) {
         if (f is! File || !f.path.toLowerCase().endsWith(".csv")) continue;
         final name = f.uri.pathSegments.last;
-        _files[name] = TorqueCsvImporter.parse(await f.readAsString(), sourceName: name);
+        final content = await f.readAsString();
+        _raw[name] = content;
+        _files[name] = TorqueCsvImporter.parse(content, sourceName: name);
       }
       _apply();
     } catch (e) {
@@ -46,6 +53,7 @@ class PidDefinitionsStore extends ChangeNotifier {
     final result = TorqueCsvImporter.parse(content, sourceName: name);
     if (result.pids.isEmpty) return result;
     _files[name] = result;
+    _raw[name] = content;
     if (persist) {
       try {
         await File("${(await _dir()).path}/$name").writeAsString(content);
@@ -57,8 +65,31 @@ class PidDefinitionsStore extends ChangeNotifier {
     return result;
   }
 
+  /// Dopisuje parametr do Mojej biblioteki. Zwraca komunikat błędu albo null.
+  Future<String?> addToLibrary({
+    required String name,
+    required String command,
+    required String equation,
+    required String unit,
+    String? header,
+    double? min,
+    double? max,
+  }) async {
+    String q(String v) => v.contains(",") || v.contains('"') ? '"${v.replaceAll('"', '""')}"' : v;
+    final shortName = name.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]+'), "_").replaceAll(RegExp(r'^_+|_+$'), "");
+    final line = [q(name), q(shortName.isEmpty ? command : shortName), command, q(equation), min?.toString() ?? "", max?.toString() ?? "", q(unit), header ?? ""].join(",");
+    // Sprawdź wiersz przed zapisem
+    final check = TorqueCsvImporter.parse("$_csvHeader\n$line");
+    if (check.pids.isEmpty) return check.skipped.isNotEmpty ? check.skipped.first : "Nieprawidłowa definicja";
+    final existing = _raw[libraryFile] ?? "$_csvHeader\n";
+    final content = "${existing.endsWith("\n") ? existing : "$existing\n"}$line\n";
+    await importCsv(libraryFile, content);
+    return null;
+  }
+
   Future<void> remove(String name) async {
     _files.remove(name);
+    _raw.remove(name);
     if (persist) {
       try {
         final f = File("${(await _dir()).path}/$name");

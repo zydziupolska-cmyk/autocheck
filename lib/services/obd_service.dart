@@ -52,6 +52,17 @@ class ObdService extends ChangeNotifier {
   Completer<String>? _pendingResponse;
   Future<void> _commandQueue = Future.value();
   bool _needsDrain = false;
+  bool _customFlowControl = false;
+
+  // --- Podsłuch magistrali (ATMA/STMA) ---
+  bool _monitoring = false;
+  bool _monitorStopping = false;
+  String _monitorCmd = "ATMA";
+  void Function(String line)? _monitorSink;
+  Completer<void>? _monitorHold; // blokuje kolejkę komend na czas podsłuchu
+  Completer<void>? _monitorStopped;
+  final StringBuffer _monitorLine = StringBuffer();
+  int _monitorRestarts = 0;
 
   // --- Stan protokołu OBD ---
   ObdBusType _bus = ObdBusType.unknown;
@@ -83,6 +94,8 @@ class ObdService extends ChangeNotifier {
   VehicleInfo? get vehicleInfo => _vehicleInfo;
   String get adapterId => _adapterId;
   String get protocolName => _protocolName;
+  ObdBusType get busType => _bus;
+  bool get isMonitoring => _monitoring;
   String? get engineEcuAddress => _engineEcu;
   Set<int> get supportedPidNumbers => _supportedPids;
 
@@ -314,6 +327,8 @@ class ObdService extends ChangeNotifier {
 
       _rx.clear();
       _needsDrain = false;
+      _endMonitor();
+      _customFlowControl = false;
       _bus = ObdBusType.unknown;
       _engineEcu = null;
       _engineHeader = null;
@@ -341,6 +356,10 @@ class ObdService extends ChangeNotifier {
 
   void _onRx(List<int> data) {
     if (data.isEmpty) return;
+    if (_monitoring) {
+      _onMonitorRx(data);
+      return;
+    }
     // ELM wysyła czyste ASCII; bajty 0x00 pojawiają się w niektórych klonach
     _rx.write(String.fromCharCodes(data.where((b) => b != 0)));
     final text = _rx.toString();
@@ -435,6 +454,19 @@ class ObdService extends ChangeNotifier {
       await _sendCommand("ATSH${header.substring(2)}");
     } else {
       await _sendCommand("ATSH$header");
+      // Moduły spoza 7E0-7E7 (np. VAG 714 → 77E): sterowanie przepływem musi iść na adres
+      // zapytań, inaczej długie odpowiedzi urywają się po pierwszej ramce.
+      final v = int.tryParse(header, radix: 16);
+      final obdRange = v != null && v >= 0x7DF && v <= 0x7E7;
+      if (!obdRange && _isCan) {
+        await _sendCommand("ATFCSH$header");
+        await _sendCommand("ATFCSD300000");
+        await _sendCommand("ATFCSM1");
+        _customFlowControl = true;
+      } else if (_customFlowControl) {
+        await _sendCommand("ATFCSM0");
+        _customFlowControl = false;
+      }
     }
     _activeHeader = header;
   }
@@ -959,6 +991,124 @@ class ObdService extends ChangeNotifier {
   }
 
   // ===========================================================================
+  // Podsłuch magistrali (nauka od innego testera, np. Autel na kablu Y)
+  // ===========================================================================
+
+  /// Czy można włączyć podsłuch (tylko CAN — tam testery rozmawiają z modułami).
+  bool get canMonitor => _status == ObdConnectionStatus.connected && _isCan && !_monitoring;
+
+  /// Włącza cichy podsłuch magistrali: adapter nie wysyła nic na CAN (nawet ACK),
+  /// tylko przekazuje wszystkie ramki, które widzi — np. zapytania Autela do modułów
+  /// i ich odpowiedzi. Każda odebrana linia (nagłówek + bajty) trafia do [onLine].
+  /// Na czas podsłuchu kolejka komend jest wstrzymana (logger i odczyty czekają).
+  Future<bool> startMonitor(void Function(String line) onLine) async {
+    if (!canMonitor) return false;
+    await _sendCommand("ATCSM1"); // cichy nasłuch — bez potwierdzeń ACK na magistrali
+    await _sendCommand("ATCAF0"); // surowe ramki z bajtem PCI (składamy je sami)
+    await _sendCommand("ATH1");
+    await _sendCommand("ATS1");
+    await _sendCommand("ATCRA"); // wszystkie identyfikatory
+
+    final previous = _commandQueue;
+    final hold = Completer<void>();
+    _commandQueue = hold.future;
+    await previous;
+    if (!_hasTransport) {
+      hold.complete();
+      return false;
+    }
+    _monitorHold = hold;
+    _monitorSink = onLine;
+    _monitorStopping = false;
+    _monitorRestarts = 0;
+    _monitorLine.clear();
+    _rx.clear();
+    _monitoring = true;
+    _monitorCmd = _stnId != null ? "STMA" : "ATMA";
+    notifyListeners();
+    await _write(_monitorCmd);
+    return true;
+  }
+
+  /// Ile razy adapter przepełnił bufor i podsłuch był wznawiany (utracone ramki).
+  int get monitorRestarts => _monitorRestarts;
+
+  void _onMonitorRx(List<int> data) {
+    for (final b in data) {
+      if (b == 0) continue;
+      final ch = String.fromCharCode(b);
+      if (ch == '\r' || ch == '\n') {
+        _emitMonitorLine();
+      } else if (ch == '>') {
+        _emitMonitorLine();
+        _onMonitorPrompt();
+      } else {
+        _monitorLine.write(ch);
+      }
+    }
+  }
+
+  void _emitMonitorLine() {
+    final line = _monitorLine.toString().trim();
+    _monitorLine.clear();
+    if (line.isEmpty) return;
+    final upper = line.toUpperCase();
+    // Komunikaty adaptera, nie ramki
+    if (upper == _monitorCmd || upper.contains("BUFFER FULL") || upper.contains("STOPPED") || upper == "?" ||
+        upper.contains("CAN ERROR") || upper.contains("NO DATA") || upper == "OK") {
+      return;
+    }
+    _monitorSink?.call(line);
+  }
+
+  /// Adapter wrócił do znaku zachęty: albo zatrzymaliśmy podsłuch, albo przepełnił się
+  /// jego bufor (BUFFER FULL) — wtedy wznawiamy nasłuch.
+  void _onMonitorPrompt() {
+    if (_monitorStopping) {
+      final c = _monitorStopped;
+      if (c != null && !c.isCompleted) c.complete();
+      return;
+    }
+    _monitorRestarts++;
+    if (_hasTransport) _write(_monitorCmd).catchError((_) {});
+  }
+
+  /// Zatrzymuje podsłuch i przywraca normalną pracę adaptera.
+  Future<void> stopMonitor() async {
+    if (!_monitoring) return;
+    _monitorStopping = true;
+    final stopped = Completer<void>();
+    _monitorStopped = stopped;
+    try {
+      // Dowolny znak przerywa ATMA/STMA
+      await _write("");
+      await stopped.future.timeout(const Duration(seconds: 2), onTimeout: () {});
+    } catch (_) {}
+    _endMonitor();
+    notifyListeners();
+    // Mógł jeszcze przyjść spóźniony znak zachęty
+    _needsDrain = true;
+    await _sendCommand("ATCAF1");
+    await _sendCommand("ATCRA");
+    _activeHeader = null;
+  }
+
+  void _endMonitor() {
+    if (!_monitoring && _monitorHold == null) return;
+    _monitoring = false;
+    _monitorStopping = false;
+    _monitorSink = null;
+    _monitorLine.clear();
+    _rx.clear();
+    final hold = _monitorHold;
+    _monitorHold = null;
+    if (hold != null && !hold.isCompleted) hold.complete();
+    final stopped = _monitorStopped;
+    _monitorStopped = null;
+    if (stopped != null && !stopped.isCompleted) stopped.complete();
+  }
+
+  // ===========================================================================
   // Skan wszystkich modułów VAG (UDS)
   // ===========================================================================
 
@@ -1007,6 +1157,7 @@ class ObdService extends ChangeNotifier {
       // Przywróć normalny tryb: odbiór wszystkich ramek, domyślne sterowanie przepływem
       await _sendCommand("ATCRA");
       await _sendCommand("ATFCSM0");
+      _customFlowControl = false;
       _activeHeader = null;
     }
     return results;
