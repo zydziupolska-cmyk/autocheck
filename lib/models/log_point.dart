@@ -14,11 +14,17 @@ class LogPoint {
 
   double? getValue(String key) => values[key];
 
+  bool has(String key) => values.containsKey(key);
+
   double get rpm => values["RPM"] ?? 0.0;
   double get boost => values["BOOST"] ?? 0.0;
   double get maf => values["MAF"] ?? 0.0;
   double get ign => values["IGN"] ?? 0.0;
-  double get tps => values["TPS"] ?? 0.0;
+  /// Żądanie kierowcy: pedał gazu (jeśli logowany), w przeciwnym razie przepustnica.
+  /// W dieslach przepustnica (klapa dławiąca) jest niemal zawsze otwarta,
+  /// więc bez pedału fałszywie wyglądałoby to na ciągły „gaz w podłodze”.
+  double get tps => values["PEDAL"] ?? values["TPS"] ?? 0.0;
+  double get throttlePlate => values["TPS"] ?? 0.0;
   double get afr => values["AFR"] ?? 14.7;
   double get stft => values["STFT"] ?? 0.0;
   double get ltft => values["LTFT"] ?? 0.0;
@@ -45,6 +51,9 @@ class LogPoint {
   );
 }
 
+/// Rodzaj pomiaru: pojedyncze przyspieszenie lub dłuższa jazda diagnostyczna.
+enum LogMode { pull, drive }
+
 class LogSession {
   final String id;
   final String title;
@@ -53,13 +62,46 @@ class LogSession {
   final List<LogPoint> points;
   final double durationSec;
 
+  /// Log z silnika Diesla — wyłącza reguły analizy przeznaczone dla benzyny.
+  final bool isDiesel;
+
+  final LogMode mode;
+
+  /// Opis pojazdu, z którego pochodzi log (np. "Volkswagen Touran (1T) • WVG...").
+  final String? vehicleLabel;
+
   LogSession({
     required this.id,
     required this.title,
     required this.createdAt,
     required this.activePidKeys,
     required this.points,
+    this.isDiesel = false,
+    this.vehicleLabel,
+    this.mode = LogMode.drive,
   }) : durationSec = points.isEmpty ? 0.0 : (points.last.timeMs - points.first.timeMs) / 1000.0;
+
+  Map<String, dynamic> toJson() => {
+        "id": id,
+        "title": title,
+        "createdAt": createdAt.toIso8601String(),
+        "activePidKeys": activePidKeys,
+        "isDiesel": isDiesel,
+        "vehicleLabel": vehicleLabel,
+        "mode": mode.name,
+        "points": points.map((p) => p.toJson()).toList(),
+      };
+
+  factory LogSession.fromJson(Map<String, dynamic> json) => LogSession(
+        id: json["id"] as String,
+        title: json["title"] as String,
+        createdAt: DateTime.tryParse(json["createdAt"] as String? ?? "") ?? DateTime.now(),
+        activePidKeys: (json["activePidKeys"] as List).map((e) => e.toString()).toList(),
+        isDiesel: json["isDiesel"] as bool? ?? false,
+        vehicleLabel: json["vehicleLabel"] as String?,
+        mode: json["mode"] == "pull" ? LogMode.pull : LogMode.drive,
+        points: (json["points"] as List).map((e) => LogPoint.fromJson(e as Map<String, dynamic>)).toList(),
+      );
 
   double get peakRpm {
     if (points.isEmpty) return 0;

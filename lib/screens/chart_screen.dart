@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:provider/provider.dart';
+import '../models/obd_pid.dart';
 import '../models/anomaly.dart';
 import '../models/log_point.dart';
 import '../services/datalogger_service.dart';
@@ -17,7 +18,7 @@ class ChartScreen extends StatefulWidget {
 
 class _ChartScreenState extends State<ChartScreen> {
   // Włączone linie na wykresie
-  final Set<String> _visibleChannels = {"RPM", "BOOST", "IGN", "AFR", "F_RAIL", "STFT"};
+  final Set<String> _visibleChannels = {"RPM", "BOOST", "TARGET_BOOST", "PEDAL", "MAF", "DPF_DP", "IGN"};
 
   // Aktualnie wskazany punkt dotykiem (Scrub HUD)
   LogPoint? _hoveredPoint;
@@ -53,7 +54,7 @@ class _ChartScreenState extends State<ChartScreen> {
           : Column(
               children: [
                 // Pasek przełączników kanałów
-                _buildChannelToggles(),
+                _buildChannelToggles(points),
 
                 // Pływający pasek HUD z wartościami w miejscu dotknięcia
                 _buildTelemetryHud(points),
@@ -88,18 +89,9 @@ class _ChartScreenState extends State<ChartScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              "Zarejestruj przyspieszenie w zakładce 'Rejestrator' lub załaduj gotowy log z symulatora.",
+              "Nagraj jazdę w zakładce „Rejestrator” albo wybierz zapisany log w „Historii”.",
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: () {
-                logger.loadDemoRun(logger.obdService.selectedScenario);
-              },
-              icon: const Icon(Icons.play_circle),
-              label: const Text("Wczytaj przykładowy log z usterką"),
-              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.cyan, foregroundColor: Colors.black),
             ),
           ],
         ),
@@ -107,18 +99,77 @@ class _ChartScreenState extends State<ChartScreen> {
     );
   }
 
-  Widget _buildChannelToggles() {
-    final channels = [
-      {"key": "RPM", "label": "RPM", "color": AppTheme.blue},
-      {"key": "BOOST", "label": "Boost", "color": AppTheme.cyan},
-      {"key": "IGN", "label": "Zapłon", "color": AppTheme.orange},
-      {"key": "AFR", "label": "AFR", "color": AppTheme.purple},
-      {"key": "F_RAIL", "label": "Szyna paliwa", "color": const Color(0xFFFF0055)},
-      {"key": "STFT", "label": "Korekta %", "color": AppTheme.yellow},
-      {"key": "MAF", "label": "MAF", "color": AppTheme.green},
-      {"key": "DPF_DP", "label": "DPF ΔP", "color": const Color(0xFFD00000)},
-      {"key": "EGT", "label": "EGT °C", "color": const Color(0xFFFF5400)},
-    ];
+  /// Kanały wykresu: klucz, etykieta, kolor, zakres do normalizacji (0-100%),
+  /// jednostka i liczba miejsc po przecinku w HUD.
+  static final List<_Channel> _channels = [
+    _Channel("RPM", "RPM", AppTheme.blue, 0, 7500, "", 0),
+    _Channel("BOOST", "Doładowanie", AppTheme.cyan, -1.0, 2.5, "b", 2),
+    _Channel("TARGET_BOOST", "Doład. zadane", const Color(0xFF80FFDB), -1.0, 2.5, "b", 2),
+    _Channel("PEDAL", "Pedał", const Color(0xFFB5179E), 0, 100, "%", 0),
+    _Channel("TPS", "Przepustn.", const Color(0xFF7000FF), 0, 100, "%", 0),
+    _Channel("LOAD", "Obciąż.", const Color(0xFF06D6A0), 0, 100, "%", 0),
+    _Channel("MAF", "MAF", AppTheme.green, 0, 250, "g", 0),
+    _Channel("F_RAIL", "Szyna", const Color(0xFFFF0055), 0, 200, "b", 0),
+    _Channel("RAIL_TGT", "Szyna zadana", const Color(0xFFFFB3C1), 0, 200, "b", 0),
+    _Channel("VGT_CMD", "VGT zadane", const Color(0xFFF72585), 0, 100, "%", 0),
+    _Channel("VGT_ACT", "VGT", const Color(0xFFB5179E), 0, 100, "%", 0),
+    _Channel("EGR_CMD", "EGR zadane", const Color(0xFF9C27B0), 0, 100, "%", 0),
+    _Channel("EGR_ACT", "EGR", const Color(0xFFCE93D8), 0, 100, "%", 0),
+    _Channel("DPF_DP", "DPF ΔP", const Color(0xFFD00000), 0, 60, "kPa", 1),
+    _Channel("EXH_P", "Ciśn. spalin", const Color(0xFFFF6D00), 90, 350, "kPa", 0),
+    _Channel("EGT", "EGT", const Color(0xFFFF5400), 100, 900, "°C", 0),
+    _Channel("IGN", "Zapłon", AppTheme.orange, -10, 35, "°", 1),
+    _Channel("AFR", "AFR", AppTheme.purple, 9, 18, "", 1),
+    _Channel("LAMBDA", "Lambda", const Color(0xFFFF4D6D), 0.7, 3.0, "", 2),
+    _Channel("LAMBDA_CMD", "Lambda zad.", const Color(0xFFFFB3C6), 0.7, 3.0, "", 2),
+    _Channel("STFT", "STFT", AppTheme.yellow, -25, 25, "%", 1),
+    _Channel("LTFT", "LTFT", const Color(0xFFFB5607), -25, 25, "%", 1),
+    _Channel("TQ_DEMAND", "Moment żąd.", const Color(0xFFFFD166), 0, 100, "%", 0),
+    _Channel("TQ_ACT", "Moment", const Color(0xFFEF476F), 0, 100, "%", 0),
+    _Channel("SPEED", "Prędkość", const Color(0xFF9D4EDD), 0, 200, "km/h", 0),
+    _Channel("IAT", "IAT", const Color(0xFF4CC9F0), -10, 80, "°C", 0),
+    _Channel("ECT", "ECT", const Color(0xFF4361EE), 0, 120, "°C", 0),
+  ];
+
+  /// Kanał „zadany” (rysowany linią przerywaną na skali swojego rzeczywistego odpowiednika).
+  static bool _isTarget(String key) => ObdPid.targetPairs.containsKey(key);
+
+  /// Zakres osi dla kanału: domyślny rozszerzony do danych; pary zadane/rzeczywiste
+  /// mają wspólną skalę, żeby było widać, o ile rzeczywista wartość odbiega od zadanej.
+  (double, double) _range(_Channel ch, List<LogPoint> points) {
+    final keys = {ch.key};
+    ObdPid.targetPairs.forEach((t, a) {
+      if (t == ch.key || a == ch.key) keys.addAll([t, a]);
+    });
+    double lo = ch.min, hi = ch.max;
+    for (final p in points) {
+      for (final k in keys) {
+        final v = p.values[k];
+        if (v == null) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    }
+    if (hi - lo < 1e-6) hi = lo + 1;
+    return (lo, hi);
+  }
+
+
+  /// Kanały obecne w logu (z dodatkiem rozszerzonych parametrów producenta).
+  List<_Channel> _availableChannels(List<LogPoint> points) {
+    final keys = <String>{for (final p in points) ...p.values.keys};
+    final known = _channels.where((c) => keys.contains(c.key)).toList();
+    final knownKeys = _channels.map((c) => c.key).toSet();
+    for (final k in keys.where((k) => !knownKeys.contains(k))) {
+      final pid = ObdPid.getByShortName(k);
+      known.add(_Channel(k, k, pid != null ? Color(pid.colorValue) : AppTheme.textSecondary,
+          pid?.minExpected ?? 0, pid?.maxExpected ?? 100, pid?.unit ?? "", 1));
+    }
+    return known;
+  }
+
+  Widget _buildChannelToggles(List<LogPoint> points) {
+    final channels = _availableChannels(points);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -127,14 +178,14 @@ class _ChartScreenState extends State<ChartScreen> {
         scrollDirection: Axis.horizontal,
         child: Row(
           children: channels.map((ch) {
-            final key = ch["key"] as String;
+            final key = ch.key;
             final isVisible = _visibleChannels.contains(key);
-            final color = ch["color"] as Color;
+            final color = ch.color;
 
             return Padding(
               padding: const EdgeInsets.only(right: 6),
               child: FilterChip(
-                label: Text(ch["label"] as String),
+                label: Text(ch.label),
                 selected: isVisible,
                 selectedColor: color.withAlpha(50),
                 backgroundColor: AppTheme.surfaceLight,
@@ -181,20 +232,15 @@ class _ChartScreenState extends State<ChartScreen> {
               style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.bold, fontSize: 13),
             ),
             const SizedBox(width: 10),
-            if (_visibleChannels.contains("RPM"))
-              Padding(padding: const EdgeInsets.only(right: 10), child: Text("RPM: ${p.rpm.toInt()}", style: const TextStyle(color: AppTheme.blue, fontWeight: FontWeight.bold, fontSize: 12))),
-            if (_visibleChannels.contains("BOOST"))
-              Padding(padding: const EdgeInsets.only(right: 10), child: Text("Boost: ${p.boost.toStringAsFixed(2)}b", style: const TextStyle(color: AppTheme.cyan, fontWeight: FontWeight.bold, fontSize: 12))),
-            if (_visibleChannels.contains("IGN"))
-              Padding(padding: const EdgeInsets.only(right: 10), child: Text("Ign: ${p.ign.toStringAsFixed(1)}°", style: const TextStyle(color: AppTheme.orange, fontWeight: FontWeight.bold, fontSize: 12))),
-            if (_visibleChannels.contains("AFR"))
-              Padding(padding: const EdgeInsets.only(right: 10), child: Text("AFR: ${p.afr.toStringAsFixed(1)}", style: const TextStyle(color: AppTheme.purple, fontWeight: FontWeight.bold, fontSize: 12))),
-            if (_visibleChannels.contains("F_RAIL") && p.values.containsKey("F_RAIL"))
-              Padding(padding: const EdgeInsets.only(right: 10), child: Text("Szyna: ${p.values["F_RAIL"]!.toStringAsFixed(1)}b", style: const TextStyle(color: Color(0xFFFF0055), fontWeight: FontWeight.bold, fontSize: 12))),
-            if (_visibleChannels.contains("STFT"))
-              Padding(padding: const EdgeInsets.only(right: 10), child: Text("STFT: ${p.stft.toStringAsFixed(1)}%", style: const TextStyle(color: AppTheme.yellow, fontWeight: FontWeight.bold, fontSize: 12))),
-            if (_visibleChannels.contains("MAF"))
-              Padding(padding: const EdgeInsets.only(right: 10), child: Text("MAF: ${p.maf.toStringAsFixed(0)}g", style: const TextStyle(color: AppTheme.green, fontWeight: FontWeight.bold, fontSize: 12))),
+            for (final ch in _availableChannels(points))
+              if (_visibleChannels.contains(ch.key))
+                Padding(
+                  padding: const EdgeInsets.only(right: 10),
+                  child: Text(
+                    "${ch.label}: ${p.values[ch.key]?.toStringAsFixed(ch.decimals) ?? '—'}${ch.unit}",
+                    style: TextStyle(color: ch.color, fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                ),
           ],
         ),
       ),
@@ -260,92 +306,27 @@ class _ChartScreenState extends State<ChartScreen> {
     // Linie danych przeskalowane do wspólnej osi 0..100% dla przejrzystości
     final List<LineChartBarData> lineBars = [];
 
-    if (_visibleChannels.contains("RPM")) {
+    // Długie logi (np. 30 min jazdy) przerzedzamy do ok. 1500 punktów na linię
+    final stride = (points.length / 1500).ceil().clamp(1, 1 << 20);
+    for (final ch in _availableChannels(points)) {
+      if (!_visibleChannels.contains(ch.key)) continue;
+      final (lo, hi) = _range(ch, points);
+      // Tylko punkty, w których parametr został faktycznie odczytany —
+      // brak odczytu nie jest rysowany jako 0.
+      final spots = <FlSpot>[];
+      for (int i = 0; i < points.length; i += stride) {
+        final v = points[i].values[ch.key];
+        if (v == null) continue;
+        spots.add(FlSpot(points[i].timeSec, ((v - lo) / (hi - lo) * 100.0).clamp(0, 100).toDouble()));
+      }
+      if (spots.isEmpty) continue;
+      final target = _isTarget(ch.key);
       lineBars.add(LineChartBarData(
-        spots: points.map((p) => FlSpot(p.timeSec, (p.rpm / 7500.0 * 100.0).clamp(0, 100))).toList(),
-        isCurved: true,
-        color: AppTheme.blue,
-        barWidth: 2.5,
-        dotData: const FlDotData(show: false),
-      ));
-    }
-
-    if (_visibleChannels.contains("BOOST")) {
-      lineBars.add(LineChartBarData(
-        spots: points.map((p) => FlSpot(p.timeSec, ((p.boost + 1.0) / 3.5 * 100.0).clamp(0, 100))).toList(),
-        isCurved: true,
-        color: AppTheme.cyan,
-        barWidth: 3.0,
-        dotData: const FlDotData(show: false),
-      ));
-    }
-
-    if (_visibleChannels.contains("IGN")) {
-      lineBars.add(LineChartBarData(
-        spots: points.map((p) => FlSpot(p.timeSec, ((p.ign + 10.0) / 45.0 * 100.0).clamp(0, 100))).toList(),
-        isCurved: true,
-        color: AppTheme.orange,
-        barWidth: 2.2,
-        dotData: const FlDotData(show: false),
-      ));
-    }
-
-    if (_visibleChannels.contains("AFR")) {
-      lineBars.add(LineChartBarData(
-        spots: points.map((p) => FlSpot(p.timeSec, ((p.afr - 9.0) / 9.0 * 100.0).clamp(0, 100))).toList(),
-        isCurved: true,
-        color: AppTheme.purple,
-        barWidth: 2.5,
-        dotData: const FlDotData(show: false),
-      ));
-    }
-
-    if (_visibleChannels.contains("MAF")) {
-      lineBars.add(LineChartBarData(
-        spots: points.map((p) => FlSpot(p.timeSec, (p.maf / 250.0 * 100.0).clamp(0, 100))).toList(),
-        isCurved: true,
-        color: AppTheme.green,
-        barWidth: 2.0,
-        dotData: const FlDotData(show: false),
-      ));
-    }
-
-    if (_visibleChannels.contains("F_RAIL") && points.any((p) => p.values.containsKey("F_RAIL"))) {
-      lineBars.add(LineChartBarData(
-        spots: points.map((p) => FlSpot(p.timeSec, (((p.values["F_RAIL"] ?? 0.0) / 200.0) * 100.0).clamp(0, 100))).toList(),
-        isCurved: true,
-        color: const Color(0xFFFF0055),
-        barWidth: 2.8,
-        dotData: const FlDotData(show: false),
-      ));
-    }
-
-    if (_visibleChannels.contains("STFT") && points.any((p) => p.values.containsKey("STFT"))) {
-      lineBars.add(LineChartBarData(
-        spots: points.map((p) => FlSpot(p.timeSec, (((p.stft + 25.0) / 50.0) * 100.0).clamp(0, 100))).toList(),
-        isCurved: true,
-        color: AppTheme.yellow,
-        barWidth: 2.2,
-        dotData: const FlDotData(show: false),
-      ));
-    }
-
-    if (_visibleChannels.contains("DPF_DP") && points.any((p) => p.values.containsKey("DPF_DP"))) {
-      lineBars.add(LineChartBarData(
-        spots: points.map((p) => FlSpot(p.timeSec, (((p.dpfDp) / 60.0) * 100.0).clamp(0, 100))).toList(),
-        isCurved: true,
-        color: const Color(0xFFD00000),
-        barWidth: 2.5,
-        dotData: const FlDotData(show: false),
-      ));
-    }
-
-    if (_visibleChannels.contains("EGT") && points.any((p) => p.values.containsKey("EGT"))) {
-      lineBars.add(LineChartBarData(
-        spots: points.map((p) => FlSpot(p.timeSec, (((p.egt - 100.0) / 800.0) * 100.0).clamp(0, 100))).toList(),
-        isCurved: true,
-        color: const Color(0xFFFF5400),
-        barWidth: 2.2,
+        spots: spots,
+        isCurved: false,
+        color: ch.color,
+        barWidth: target ? 1.8 : (ch.key == "BOOST" ? 3.0 : 2.2),
+        dashArray: target ? [6, 4] : null,
         dotData: const FlDotData(show: false),
       ));
     }
@@ -633,4 +614,16 @@ class _ChartScreenState extends State<ChartScreen> {
       },
     );
   }
+}
+
+class _Channel {
+  final String key;
+  final String label;
+  final Color color;
+  final double min;
+  final double max;
+  final String unit;
+  final int decimals;
+
+  const _Channel(this.key, this.label, this.color, this.min, this.max, this.unit, this.decimals);
 }

@@ -23,6 +23,7 @@ class Anomaly {
   final String? falseLeadWarning; // Ostrzeżenie przed mylnym tropem (np. "Nie wymieniaj w ciemno czujnika X!")
   final List<String>? ruledOutCauses; // Przyczyny wykluczone przez inne parametry
   final String? rootCauseConclusion; // Końcowy techniczny wniosek przyczynowo-skutkowy
+  final String? plainSummary; // Wniosek prostym językiem dla kierowcy („co jest zepsute i co zrobić”)
 
   const Anomaly({
     required this.id,
@@ -42,6 +43,7 @@ class Anomaly {
     this.falseLeadWarning,
     this.ruledOutCauses,
     this.rootCauseConclusion,
+    this.plainSummary,
   });
 
   double get startSec => startMs / 1000.0;

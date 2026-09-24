@@ -1,632 +1,899 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
-import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
 import '../models/obd_pid.dart';
 import '../models/extended_pid.dart';
-import '../models/log_point.dart';
 import '../models/dtc_code.dart';
 import '../models/vehicle_info.dart';
-import 'simulator_service.dart';
+import 'elm_parser.dart';
 
 enum ObdConnectionStatus {
   disconnected,
-  scanning,
   connecting,
   initializing,
   connected,
-  simulated,
   error,
 }
 
-class ObdService {
+/// Komunikacja z adapterem ELM327 / STN (vLinker MC+) przez BLE, Classic BT lub Wi-Fi.
+///
+/// Najważniejsze zasady działania:
+/// * nagłówki CAN są włączone (ATH1), więc każdą odpowiedź przypisujemy do
+///   konkretnego sterownika — silnik (7E8) i skrzynia (7E9) nie mieszają się,
+/// * po wykryciu protokołu zapytania o czujniki idą fizycznie tylko do ECU
+///   silnika (ATSH 7E0), a każda odpowiedź jest sprawdzana (usługa + numer PID),
+///   więc spóźniona odpowiedź nigdy nie trafi do niewłaściwego czujnika,
+/// * komendy są kolejkowane — tylko jedna komenda naraz, niezależnie od tego,
+///   czy wysyła je rejestrator, czy przycisk „Odczytaj kody błędów”.
+class ObdService extends ChangeNotifier {
   ObdConnectionStatus _status = ObdConnectionStatus.disconnected;
   String _statusMessage = "Rozłączono";
-  BluetoothDevice? _connectedDevice;
-  BluetoothCharacteristic? _writeCharacteristic;
-  BluetoothCharacteristic? _readCharacteristic;
-  StreamSubscription? _notifySubscription;
-  String _rxBuffer = "";
-  Completer<String>? _cmdCompleter;
-  Completer<void>? _cmdLock; // Mutex — tylko jedna komenda OBD na raz
-  Socket? _wifiSocket;
-  fbs.BluetoothConnection? _classicConnection;
+  bool _isScanning = false;
+  bool _closing = false;
 
-  final SimulatorService _simulator = SimulatorService();
-  SimScenario selectedScenario = SimScenario.healthy;
+  // --- Warstwa transportowa ---
+  BluetoothDevice? _bleDevice;
+  BluetoothCharacteristic? _bleWrite;
+  StreamSubscription<List<int>>? _bleRxSub;
+  StreamSubscription<BluetoothConnectionState>? _bleStateSub;
+  StreamSubscription<List<ScanResult>>? _scanSub;
+  fbs.BluetoothConnection? _classic;
+  StreamSubscription<Uint8List>? _classicSub;
+  Socket? _socket;
+  StreamSubscription<Uint8List>? _socketSub;
 
-  // Wykryte czujniki obsługiwane przez pojazd
-  List<ObdPid> _discoveredPids = List.from(ObdPid.standardPids);
+  // --- Kolejka komend ---
+  final StringBuffer _rx = StringBuffer();
+  Completer<String>? _pendingResponse;
+  Future<void> _commandQueue = Future.value();
+  bool _needsDrain = false;
 
-  // Zidentyfikowany pojazd (VIN, sterownik, rocznik)
+  // --- Stan protokołu OBD ---
+  ObdBusType _bus = ObdBusType.unknown;
+  String? _engineEcu; // adres odpowiedzi ECU silnika, np. "7E8"
+  String? _engineHeader; // adres zapytań fizycznych do ECU silnika, np. "7E0"
+  String? _activeHeader; // ostatnio ustawiony ATSH
+  bool _responseCountSupported = false;
+  Set<int> _supportedPids = {};
+  Set<int> _supportedMode06 = {};
+  double? _baroKpa;
+  String _adapterId = "";
+  String _protocolName = "";
+
+  List<ObdPid> _discoveredPids = uniqueStandardPids();
   VehicleInfo? _vehicleInfo;
-
-  // Callbacki do powiadamiania UI
-  final List<void Function(ObdConnectionStatus status, String msg)> _statusListeners = [];
-  final List<void Function(LogPoint point)> _dataListeners = [];
 
   ObdConnectionStatus get status => _status;
   String get statusMessage => _statusMessage;
-  BluetoothDevice? get connectedDevice => _connectedDevice;
+  bool get isScanning => _isScanning;
+  bool get isLive => _status == ObdConnectionStatus.connected;
+  BluetoothDevice? get connectedDevice => _bleDevice;
   List<ObdPid> get discoveredPids => _discoveredPids;
   VehicleInfo? get vehicleInfo => _vehicleInfo;
-  SimulatorService get simulator => _simulator;
+  String get adapterId => _adapterId;
+  String get protocolName => _protocolName;
+  String? get engineEcuAddress => _engineEcu;
+  Set<int> get supportedPidNumbers => _supportedPids;
 
-  void addStatusListener(void Function(ObdConnectionStatus status, String msg) listener) {
-    _statusListeners.add(listener);
-    listener(_status, _statusMessage);
+  /// Katalog czujników bez duplikatów nazw (np. dwa warianty PEDAL).
+  static List<ObdPid> uniqueStandardPids() {
+    final seen = <String>{};
+    return ObdPid.standardPids.where((p) => seen.add(p.shortName)).toList();
   }
 
-  void removeStatusListener(void Function(ObdConnectionStatus status, String msg) listener) {
-    _statusListeners.remove(listener);
-  }
-
-  void addDataListener(void Function(LogPoint point) listener) {
-    _dataListeners.add(listener);
-  }
-
-  void removeDataListener(void Function(LogPoint point) listener) {
-    _dataListeners.remove(listener);
-  }
+  bool get _hasTransport => _socket != null || _classic != null || _bleWrite != null;
+  bool get _isCan => _bus == ObdBusType.can11 || _bus == ObdBusType.can29;
 
   void _updateStatus(ObdConnectionStatus s, String msg) {
     _status = s;
     _statusMessage = msg;
-    for (final l in _statusListeners) {
-      l(_status, _statusMessage);
-    }
+    notifyListeners();
   }
 
-  /// Włącza tryb symulatora (bez konieczności podłączania auta)
-  void connectSimulator(SimScenario scenario) {
-    disconnect();
-    selectedScenario = scenario;
-    _discoveredPids = List.from(ObdPid.standardPids);
+  // ===========================================================================
+  // Skanowanie BLE — nie zmienia statusu połączenia z autem
+  // ===========================================================================
 
-    if (scenario == SimScenario.skodaRapidInjector) {
-      _vehicleInfo = VehicleInfo.skodaRapidSample;
-    } else if (scenario == SimScenario.peugeotIdleHunting) {
-      _vehicleInfo = VehicleInfo.peugeot307Sample;
-    } else {
-      _vehicleInfo = VehicleInfo.genericSample;
-    }
-
-    _updateStatus(ObdConnectionStatus.simulated, "Połączono w trybie symulatora: ${scenario.title}");
-  }
-
-  /// Rozpoczyna skanowanie urządzeń Bluetooth w poszukiwaniu vLinker MC+
-  Future<void> startScan({required void Function(List<ScanResult> results) onResults}) async {
-    _updateStatus(ObdConnectionStatus.scanning, "Skanowanie urządzeń Bluetooth...");
+  /// Skanuje urządzenia BLE. Zwraca komunikat błędu albo null.
+  Future<String?> startScan({required void Function(List<ScanResult> results) onResults}) async {
     try {
-      // Sprawdź czy Bluetooth jest włączony
-      final adapterState = await FlutterBluePlus.adapterState.first;
+      final adapterState = await FlutterBluePlus.adapterState
+          .where((s) => s != BluetoothAdapterState.unknown)
+          .first
+          .timeout(const Duration(seconds: 3), onTimeout: () => BluetoothAdapterState.unknown);
       if (adapterState != BluetoothAdapterState.on) {
-        _updateStatus(ObdConnectionStatus.error, "Włącz Bluetooth w telefonie!");
-        return;
+        return "Włącz Bluetooth w telefonie!";
       }
 
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 8));
-      FlutterBluePlus.scanResults.listen((results) {
-        onResults(results);
-      });
+      await _scanSub?.cancel();
+      _scanSub = FlutterBluePlus.onScanResults.listen(onResults);
+      FlutterBluePlus.cancelWhenScanComplete(_scanSub!);
+
+      _isScanning = true;
+      notifyListeners();
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
+      await FlutterBluePlus.isScanning.where((s) => !s).first;
+      return null;
     } catch (e) {
-      _updateStatus(ObdConnectionStatus.error, "Błąd skanowania: $e");
+      return "Błąd skanowania: $e";
+    } finally {
+      _isScanning = false;
+      notifyListeners();
     }
   }
 
   Future<void> stopScan() async {
-    await FlutterBluePlus.stopScan();
-    if (_status == ObdConnectionStatus.scanning) {
-      _updateStatus(ObdConnectionStatus.disconnected, "Zakończono skanowanie");
-    }
+    try {
+      await FlutterBluePlus.stopScan();
+    } catch (_) {}
+    _isScanning = false;
+    notifyListeners();
   }
 
-  /// Łączy się z wybranym adapterem (np. vLinker MC+)
+  // ===========================================================================
+  // Łączenie — BLE / Classic / Wi-Fi
+  // ===========================================================================
+
+  bool get _isBusy => _status == ObdConnectionStatus.connecting || _status == ObdConnectionStatus.initializing;
+
+  /// Łączy się z adapterem BLE (np. vLinker MC+)
   Future<bool> connectDevice(BluetoothDevice device) async {
+    if (_isBusy) return false;
     await stopScan();
-    _updateStatus(ObdConnectionStatus.connecting, "Łączenie z ${device.platformName.isNotEmpty ? device.platformName : device.remoteId}...");
+    await _closeTransport();
+    final name = device.platformName.isNotEmpty ? device.platformName : device.remoteId.str;
+    _updateStatus(ObdConnectionStatus.connecting, "Łączenie z $name...");
 
     try {
-      await device.connect(autoConnect: false, timeout: const Duration(seconds: 10));
-      _connectedDevice = device;
+      await device.connect(autoConnect: false, timeout: const Duration(seconds: 15));
+      _bleDevice = device;
+      _bleStateSub = device.connectionState.listen((s) {
+        if (s == BluetoothConnectionState.disconnected && _bleDevice == device) {
+          _onTransportLost("Utracono połączenie Bluetooth z adapterem");
+        }
+      });
 
-      _updateStatus(ObdConnectionStatus.initializing, "Konfiguracja protokołu STN/ELM327...");
-
-      // Wykryj usługi i charakterystyki SPP / UART
-            final services = await device.discoverServices();
+      final services = await device.discoverServices();
       BluetoothCharacteristic? bestWrite;
-      BluetoothCharacteristic? bestRead;
+      BluetoothCharacteristic? bestNotify;
+      int bestScore = -1;
 
       for (final service in services) {
-        final uuidStr = service.uuid.toString().toUpperCase();
-        bool isUart = uuidStr.contains("FFE0") || uuidStr.contains("FFF0") || uuidStr.contains("18F0") || uuidStr.contains("E7810A71");
-        
-        BluetoothCharacteristic? srvWrite;
-        BluetoothCharacteristic? srvRead;
+        final uuid = service.uuid.str.toUpperCase();
+        // Pomiń standardowe usługi GAP/GATT/Device Info
+        if (uuid == "1800" || uuid == "1801" || uuid == "180A" || uuid == "180F") continue;
 
+        BluetoothCharacteristic? w;
+        BluetoothCharacteristic? n;
         for (final c in service.characteristics) {
-          if (c.properties.write || c.properties.writeWithoutResponse) srvWrite = c;
-          if (c.properties.notify) srvRead = c; // musi byc notify
+          if (w == null && (c.properties.write || c.properties.writeWithoutResponse)) w = c;
+          if (n == null && (c.properties.notify || c.properties.indicate)) n = c;
         }
+        if (w == null || n == null) continue;
 
-        if (srvWrite != null && srvRead != null) {
-           if (bestWrite == null || isUart) {
-             bestWrite = srvWrite;
-             bestRead = srvRead;
-           }
+        // vLinker MC+: 18F0 (2AF0/2AF1), typowe klony: FFE0, FFF0
+        int score = 1;
+        if (uuid.contains("18F0") || uuid.contains("FFE0") || uuid.contains("FFF0") || uuid.contains("E7810A71")) {
+          score = 2;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestWrite = w;
+          bestNotify = n;
         }
       }
 
-      _writeCharacteristic = bestWrite;
-      _readCharacteristic = bestRead;
-
-      if (_writeCharacteristic == null) {
-        _updateStatus(ObdConnectionStatus.error, "Nie znaleziono charakterystyki zapisu OBD!");
+      if (bestWrite == null || bestNotify == null) {
+        _updateStatus(ObdConnectionStatus.error, "To urządzenie nie wygląda na adapter OBD (brak kanału UART BLE).");
+        await _closeTransport();
         return false;
       }
 
-      // Włącz powiadomienia odczytu jeśli dostępne
-            if (_readCharacteristic != null && _readCharacteristic!.properties.notify) {
-        await _readCharacteristic!.setNotifyValue(true);
-        _notifySubscription = _readCharacteristic!.lastValueStream.listen((value) {
-          if (value.isNotEmpty) {
-            final str = utf8.decode(value, allowMalformed: true);
-            _rxBuffer += str;
-            if (_rxBuffer.contains(">")) {
-              if (_cmdCompleter != null && !_cmdCompleter!.isCompleted) {
-                _cmdCompleter!.complete(_rxBuffer.replaceAll(">", "").trim());
-              }
-              _rxBuffer = "";
-            }
-          }
-        });
-      }
+      // onValueReceived — tylko dane przychodzące z adaptera. (lastValueStream
+      // zwracał także nasze własne, wysłane komendy, co psuło odpowiedzi.)
+      _bleRxSub = bestNotify.onValueReceived.listen((value) => _onRx(value));
+      await bestNotify.setNotifyValue(true);
+      _bleWrite = bestWrite;
 
-      // Inicjalizacja komendami AT
-      await _sendCommand("ATZ"); // Reset
-      await Future.delayed(const Duration(milliseconds: 600));
-      await _sendCommand("ATE0"); // Echo off
-      await _sendCommand("ATL0"); // Linefeeds off
-      await _sendCommand("ATS1"); // Spaces ON — czytelne odpowiedzi
-      await _sendCommand("ATH0"); // Headers off
-      await _sendCommand("ATSP0"); // Automatyczny protokół
-
-      // Odpytaj o obsługiwane czujniki (PID Scan)
-      await scanSupportedPids();
-
-      // Odczytaj dane pojazdu z ECU (VIN, CALID, protokół, napięcie)
-      await readVehicleInfo();
-
-      _updateStatus(ObdConnectionStatus.connected, "Połączono z vLinker MC+ (${_discoveredPids.length} czujników | ${_vehicleInfo?.modelName ?? 'Pojazd'})");
-      return true;
+      return await _initializeAdapter("vLinker (BLE)");
     } catch (e) {
-      _updateStatus(ObdConnectionStatus.error, "Błąd połączenia: $e");
+      _updateStatus(ObdConnectionStatus.error, "Błąd połączenia BLE: $e");
+      await _closeTransport();
       return false;
     }
   }
 
-  /// Skanuje czujniki obsługiwane przez komputer silnika (ECU)
-  Future<void> scanSupportedPids() async {
-    if (_status == ObdConnectionStatus.simulated) {
-      _discoveredPids = List.from(ObdPid.standardPids);
-      return;
-    }
-
+  /// Łączy się ze sparowanym adapterem Classic Bluetooth (SPP)
+  Future<bool> connectClassic(fbs.BluetoothDevice device) async {
+    if (_isBusy) return false;
+    await stopScan();
+    await _closeTransport();
+    _updateStatus(ObdConnectionStatus.connecting, "Łączenie (Classic BT): ${device.name ?? device.address}...");
     try {
-      final response = await _sendCommand("0100");
-      final bytes = _parseHexBytes(response);
-
-      if (bytes.length >= 4) {
-        // Dekoduj maskę bitową PID 01-20
-        final supportedPids = <ObdPid>[];
-        for (final pid in ObdPid.standardPids) {
-          // Dla uproszczenia dodajemy pasujące
-          supportedPids.add(pid);
+      // Pierwsza próba połączenia RFCOMM z adapterem często kończy się
+      // niepowodzeniem (adapter jeszcze się budzi) — ponów raz po krótkiej przerwie.
+      fbs.BluetoothConnection? conn;
+      for (int attempt = 1; conn == null; attempt++) {
+        try {
+          conn = await fbs.BluetoothConnection.toAddress(device.address);
+        } catch (_) {
+          if (attempt >= 3) rethrow;
+          _updateStatus(ObdConnectionStatus.connecting, "Ponawiam połączenie (próba ${attempt + 1}/3)...");
+          await Future.delayed(const Duration(milliseconds: 1200));
         }
-        _discoveredPids = supportedPids;
       }
-    } catch (_) {
-      _discoveredPids = List.from(ObdPid.standardPids);
-    }
-  }
-
-        Future<bool> connectClassic(fbs.BluetoothDevice device) async {
-    disconnect();
-    _updateStatus(ObdConnectionStatus.connecting, "Łączenie (Classic BT): " + (device.name ?? device.address) + "...");
-    try {
-      _classicConnection = await fbs.BluetoothConnection.toAddress(device.address);
-      
-      _notifySubscription = _classicConnection!.input!.listen((Uint8List data) {
-        if (data.isNotEmpty) {
-          final str = String.fromCharCodes(data);
-          _rxBuffer += str;
-          if (_rxBuffer.contains(">")) {
-            if (_cmdCompleter != null && !_cmdCompleter!.isCompleted) {
-              _cmdCompleter!.complete(_rxBuffer.replaceAll(">", "").trim());
-            }
-            _rxBuffer = "";
-          }
-        }
-      })..onDone(() {
-        if (_status != ObdConnectionStatus.disconnected && _status != ObdConnectionStatus.error) {
-          _updateStatus(ObdConnectionStatus.disconnected, "Odłączono BT Classic");
-        }
-        disconnect();
-      });
-      
-      _updateStatus(ObdConnectionStatus.initializing, "Konfiguracja protokołu STN/ELM327 (Classic)...");
-      
-      await _sendCommand("ATZ");
-      await Future.delayed(const Duration(milliseconds: 600));
-      await _sendCommand("ATE0");
-      await _sendCommand("ATL0");
-      await _sendCommand("ATS1"); // Spaces ON
-      await _sendCommand("ATH0");
-      await _sendCommand("ATSP0");
-      
-      await scanSupportedPids();
-      await readVehicleInfo();
-      
-      _updateStatus(ObdConnectionStatus.connected, "Połączono (Classic BT) (" + _discoveredPids.length.toString() + " czujników | " + (_vehicleInfo?.modelName ?? 'Pojazd') + ")");
-      return true;
-    } catch (e) {
-      _updateStatus(ObdConnectionStatus.error, "Błąd BT Classic: " + e.toString());
-      return false;
-    }
-  }
-
-  Future<bool> connectWifi({String ip = "192.168.0.10", int port = 35000}) async {
-    disconnect();
-    _updateStatus(ObdConnectionStatus.connecting, "Łączenie przez Wi-Fi (" + ip + ":" + port.toString() + ")...");
-    try {
-      _wifiSocket = await Socket.connect(ip, port, timeout: const Duration(seconds: 5));
-      _notifySubscription = _wifiSocket!.listen(
-        (List<int> data) {
-          if (data.isNotEmpty) {
-            final str = String.fromCharCodes(data);
-            _rxBuffer += str;
-            if (_rxBuffer.contains(">")) {
-              if (_cmdCompleter != null && !_cmdCompleter!.isCompleted) {
-                _cmdCompleter!.complete(_rxBuffer.replaceAll(">", "").trim());
-              }
-              _rxBuffer = "";
-            }
-          }
-        },
-        onError: (error) {
-          _updateStatus(ObdConnectionStatus.error, "Błąd Wi-Fi: " + error.toString());
-          disconnect();
-        },
-        onDone: () {
-          if (_status != ObdConnectionStatus.disconnected && _status != ObdConnectionStatus.error) {
-            _updateStatus(ObdConnectionStatus.disconnected, "Odłączono Wi-Fi");
-          }
-          disconnect();
-        },
+      _classic = conn;
+      _classicSub = conn.input!.listen(
+        _onRx,
+        onDone: () => _onTransportLost("Adapter Classic BT rozłączony"),
+        onError: (_) => _onTransportLost("Błąd transmisji Classic BT"),
       );
-      
-      _updateStatus(ObdConnectionStatus.initializing, "Konfiguracja protokołu STN/ELM327 (Wi-Fi)...");
-      
-      await _sendCommand("ATZ");
-      await Future.delayed(const Duration(milliseconds: 600));
-      await _sendCommand("ATE0");
-      await _sendCommand("ATL0");
-      await _sendCommand("ATS1"); // Spaces ON
-      await _sendCommand("ATH0");
-      await _sendCommand("ATSP0");
-      
-      await scanSupportedPids();
-      await readVehicleInfo();
-      
-      _updateStatus(ObdConnectionStatus.connected, "Połączono przez Wi-Fi (" + _discoveredPids.length.toString() + " czujników | " + (_vehicleInfo?.modelName ?? 'Pojazd') + ")");
-      return true;
+      return await _initializeAdapter("Classic BT");
     } catch (e) {
-      _updateStatus(ObdConnectionStatus.error, "Błąd Wi-Fi: " + e.toString());
+      _updateStatus(ObdConnectionStatus.error, "Błąd BT Classic: $e");
+      await _closeTransport();
       return false;
     }
   }
 
-  Future<String> _sendCommand(String cmd) async {
-    if (_writeCharacteristic == null && _wifiSocket == null && _classicConnection == null) return "";
-    
-    // Mutex: czekaj aż poprzednia komenda się skończy
-    while (_cmdLock != null && !_cmdLock!.isCompleted) {
-      await _cmdLock!.future;
-    }
-    _cmdLock = Completer<void>();
-    
+  /// Łączy się z adapterem Wi-Fi (domyślnie 192.168.0.10:35000)
+  Future<bool> connectWifi({String ip = "192.168.0.10", int port = 35000}) async {
+    if (_isBusy) return false;
+    await stopScan();
+    await _closeTransport();
+    _updateStatus(ObdConnectionStatus.connecting, "Łączenie przez Wi-Fi ($ip:$port)...");
     try {
-      _rxBuffer = "";
-      _cmdCompleter = Completer<String>();
-      final data = utf8.encode(cmd + String.fromCharCode(13));
-      
-      if (_wifiSocket != null) {
-        _wifiSocket!.add(data);
-      } else if (_classicConnection != null) {
-        _classicConnection!.output.add(Uint8List.fromList(data));
-        await _classicConnection!.output.allSent;
-      } else {
-        await _writeCharacteristic!.write(data, withoutResponse: _writeCharacteristic!.properties.writeWithoutResponse);
-      }
-      
-      final response = await _cmdCompleter!.future.timeout(const Duration(seconds: 5));
-      
-      // Obetnij echo komendy (niektóre klony ELM327 ignorują ATE0)
-      String cleaned = response.trim();
-      if (cleaned.startsWith(cmd)) {
-        cleaned = cleaned.substring(cmd.length).trim();
-      }
-      // Usuń "SEARCHING..." z odpowiedzi (ELM327 wysyła to przy pierwszym zapytaniu)
-      cleaned = cleaned.replaceAll("SEARCHING...", "").trim();
-      
-      return cleaned;
+      final socket = await Socket.connect(ip, port, timeout: const Duration(seconds: 5));
+      socket.setOption(SocketOption.tcpNoDelay, true);
+      _socket = socket;
+      _socketSub = socket.listen(
+        _onRx,
+        onError: (_) => _onTransportLost("Błąd połączenia Wi-Fi"),
+        onDone: () => _onTransportLost("Adapter Wi-Fi rozłączony"),
+      );
+      return await _initializeAdapter("Wi-Fi");
     } catch (e) {
+      _updateStatus(ObdConnectionStatus.error, "Błąd Wi-Fi: $e");
+      await _closeTransport();
+      return false;
+    }
+  }
+
+  void _onTransportLost(String msg) {
+    if (_closing) return;
+    if (_status == ObdConnectionStatus.disconnected) return;
+    _closeTransport();
+    _updateStatus(ObdConnectionStatus.disconnected, msg);
+  }
+
+  /// Rozłączenie
+  void disconnect() {
+    _closeTransport();
+    _updateStatus(ObdConnectionStatus.disconnected, "Rozłączono");
+  }
+
+  Future<void> _closeTransport() async {
+    _closing = true;
+    try {
+      final pending = _pendingResponse;
+      _pendingResponse = null;
+      if (pending != null && !pending.isCompleted) pending.complete("");
+
+      await _bleRxSub?.cancel();
+      await _bleStateSub?.cancel();
+      await _classicSub?.cancel();
+      await _socketSub?.cancel();
+      _bleRxSub = null;
+      _bleStateSub = null;
+      _classicSub = null;
+      _socketSub = null;
+
+      _socket?.destroy();
+      _socket = null;
+      _classic?.dispose();
+      _classic = null;
+      final ble = _bleDevice;
+      _bleDevice = null;
+      _bleWrite = null;
+      if (ble != null) {
+        try {
+          await ble.disconnect();
+        } catch (_) {}
+      }
+
+      _rx.clear();
+      _needsDrain = false;
+      _bus = ObdBusType.unknown;
+      _engineEcu = null;
+      _engineHeader = null;
+      _activeHeader = null;
+      _responseCountSupported = false;
+      _supportedPids = {};
+      _supportedMode06 = {};
+      _udsPressureScale.clear();
+      _baroKpa = null;
+      _adapterId = "";
+      _protocolName = "";
+    } finally {
+      _closing = false;
+    }
+  }
+
+  // ===========================================================================
+  // Niskopoziomowa komunikacja z ELM327
+  // ===========================================================================
+
+  void _onRx(List<int> data) {
+    if (data.isEmpty) return;
+    // ELM wysyła czyste ASCII; bajty 0x00 pojawiają się w niektórych klonach
+    _rx.write(String.fromCharCodes(data.where((b) => b != 0)));
+    final text = _rx.toString();
+    final idx = text.indexOf('>');
+    if (idx < 0) return;
+
+    _rx.clear();
+    if (idx + 1 < text.length) _rx.write(text.substring(idx + 1));
+    final pending = _pendingResponse;
+    _pendingResponse = null;
+    // Odpowiedź bez oczekującego zapytania (spóźniona) jest odrzucana
+    if (pending != null && !pending.isCompleted) pending.complete(text.substring(0, idx));
+  }
+
+  Future<void> _write(String cmd) async {
+    final bytes = Uint8List.fromList("$cmd\r".codeUnits);
+    if (_socket != null) {
+      _socket!.add(bytes);
+      await _socket!.flush();
+    } else if (_classic != null) {
+      _classic!.output.add(bytes);
+      await _classic!.output.allSent;
+    } else if (_bleWrite != null) {
+      final c = _bleWrite!;
+      final withoutResponse = c.properties.writeWithoutResponse;
+      final mtu = _bleDevice?.mtuNow ?? 23;
+      final chunk = (mtu - 3).clamp(20, 512);
+      for (int i = 0; i < bytes.length; i += chunk) {
+        final end = i + chunk > bytes.length ? bytes.length : i + chunk;
+        await c.write(bytes.sublist(i, end), withoutResponse: withoutResponse);
+      }
+    }
+  }
+
+  /// Wysyła komendę i czeka na znak zachęty '>'. Komendy są ściśle kolejkowane.
+  Future<String> _sendCommand(String cmd, {Duration timeout = const Duration(seconds: 4)}) async {
+    if (!_hasTransport) return "";
+
+    final previous = _commandQueue;
+    final done = Completer<void>();
+    _commandQueue = done.future;
+    await previous;
+
+    try {
+      if (!_hasTransport) return "";
+
+      // Po przekroczeniu czasu adapter mógł jeszcze coś wysłać — odczekaj na
+      // zaległy znak '>' zanim wyślesz nową komendę.
+      if (_needsDrain) {
+        final drain = Completer<String>();
+        _pendingResponse = drain;
+        await drain.future.timeout(const Duration(milliseconds: 1500), onTimeout: () => "");
+        _pendingResponse = null;
+        _needsDrain = false;
+      }
+
+      _rx.clear();
+      final completer = Completer<String>();
+      _pendingResponse = completer;
+      await _write(cmd);
+      final response = await completer.future.timeout(timeout);
+      return _stripEcho(response, cmd);
+    } on TimeoutException {
+      _pendingResponse = null;
+      _needsDrain = true;
+      if (kDebugMode) debugPrint("OBD timeout: $cmd");
+      return "";
+    } catch (e) {
+      _pendingResponse = null;
+      if (kDebugMode) debugPrint("OBD błąd komendy $cmd: $e");
       return "";
     } finally {
-      if (_cmdLock != null && !_cmdLock!.isCompleted) {
-        _cmdLock!.complete();
-      }
+      done.complete();
     }
   }
 
-  List<int> _parseHexBytes(String response) {
-    final lines = response.split(RegExp(r'[\r\n]+'));
-    final List<int> bytes = [];
-    
-    for (var line in lines) {
-      line = line.trim();
-      if (line.isEmpty) continue;
-      
-      final upper = line.toUpperCase();
-      if (upper.contains('OK') || upper.contains('NO DATA') || upper.contains('NODATA') ||
-          upper.contains('SEARCHING') || upper.contains('UNABLE') || upper.contains('ERROR') ||
-          upper.contains('STOPPED') || upper.contains('?') || upper == '>') continue;
-      if (upper.startsWith('AT') || upper.startsWith('ELM')) continue;
-      
-      // Remove CAN frame prefix (e.g. "0: ", "1:", "2: ")
-      line = line.replaceAll(RegExp(r'^[0-9]:\s*'), '');
-      
-      // Skip PCI byte count (3 hex digit lines)
-      if (line.length <= 3 && RegExp(r'^[0-9A-Fa-f]+$').hasMatch(line)) continue;
-
-      final parts = line.split(RegExp(r'\s+'));
-      for (final p in parts) {
-        if (p.isEmpty) continue;
-        if (!RegExp(r'^[0-9A-Fa-f]+$').hasMatch(p)) continue;
-        
-        if (p.length == 2) {
-          final val = int.tryParse(p, radix: 16);
-          if (val != null) bytes.add(val);
-        } else if (p.length > 2 && p.length % 2 == 0) {
-          for (int i = 0; i < p.length; i += 2) {
-            final val = int.tryParse(p.substring(i, i + 2), radix: 16);
-            if (val != null) bytes.add(val);
-          }
-        }
-      }
-    }
-    return bytes;
+  /// Usuwa echo komendy (niektóre klony ignorują ATE0).
+  static String _stripEcho(String response, String cmd) {
+    final normCmd = cmd.replaceAll(' ', '').toUpperCase();
+    return response
+        .split(RegExp(r'[\r\n]+'))
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty && l.replaceAll(' ', '').toUpperCase() != normCmd)
+        .join("\n");
   }
 
-  String _bytesToAscii(List<int> bytes) {
-    final buffer = StringBuffer();
-    for (final b in bytes) {
-      if (b >= 32 && b <= 126) {
-        buffer.writeCharCode(b);
-      }
+  Future<void> _setHeader(String header) async {
+    if (_activeHeader == header) return;
+    if (header.length == 8) {
+      // 29-bit: priorytet przez ATCP, reszta przez ATSH
+      await _sendCommand("ATCP${header.substring(0, 2)}");
+      await _sendCommand("ATSH${header.substring(2)}");
+    } else {
+      await _sendCommand("ATSH$header");
     }
-    return buffer.toString().trim();
+    _activeHeader = header;
   }
 
-  Future<double> readPid(ObdPid pid) async {
-    if (_status == ObdConnectionStatus.simulated) {
-      return 0.0; // W trybie symulatora logi spływają z SimulatorService
-    }
-
-    try {
-      String command = pid.code;
-      bool isExtended = false;
-
-      // Obsługa zapytań producenckich (Target Boost, Mode 22, UDS)
-      if (pid is ExtendedPid) {
-        isExtended = true;
-        command = pid.requestCommand;
-        if (pid.canHeader != null) {
-          await _sendCommand("AT SH ${pid.canHeader}");
-        }
-      }
-
-      final response = await _sendCommand(command);
-      final bytes = _parseHexBytes(response);
-
-      // Przywróć domyślne nagłówki OBD2 po zapytaniu UDS
-      if (isExtended) {
-        await _sendCommand("AT SH 7DF"); // Reset do domyślnego rozgłoszenia 11-bit
-      }
-
-      if (bytes.isNotEmpty) {
-        // W prawdziwym środowisku trzeba by wycinać echo i nagłówki przed zdekodowaniem.
-        // Tutaj przekazujemy bajty payloadu do dekodera PIDu.
-        // Przykładowo, odpowiedź na 010C to 41 0C 1A F8. My zdekodowaliśmy "410C1AF8" -> [0x41, 0x0C, 0x1A, 0xF8]
-        // Trzeba uciąć pierwsze 2 bajty echa Mode+Pid dla standardowych, lub 3 bajty dla Mode 22.
-        int payloadStartIndex = 2; // Dla 01 XX -> odpowiedź 41 XX Data...
-        if (isExtended && bytes[0] == 0x62) {
-          payloadStartIndex = 3; // Dla 22 XX YY -> odpowiedź 62 XX YY Data...
-        }
-        
-        if (bytes.length > payloadStartIndex) {
-          final payload = bytes.sublist(payloadStartIndex);
-          return pid.decoder(payload);
-        }
-      }
-      return 0.0;
-    } catch (_) {
-      return 0.0;
+  String? get _functionalHeader {
+    switch (_bus) {
+      case ObdBusType.can11:
+        return "7DF";
+      case ObdBusType.can29:
+        return "18DB33F1";
+      default:
+        return null;
     }
   }
 
-  /// Odczytuje zapisane kody błędów silnika (DTC Mode 03 & 07)
-  Future<List<DtcCode>> readDtcCodes() async {
-    if (_status == ObdConnectionStatus.simulated) {
-      if (selectedScenario == SimScenario.skodaRapidInjector) {
-        return [
-          DtcCode.getByCode("P0087"),
-          DtcCode.getByCode("P0301"),
-          DtcCode.getByCode("P0172"),
-        ];
-      } else if (selectedScenario == SimScenario.boostLeak) {
-        return [DtcCode.getByCode("P0299")];
-      } else if (selectedScenario == SimScenario.knockRetard) {
-        return [DtcCode.getByCode("P0300")];
-      } else if (selectedScenario == SimScenario.peugeotIdleHunting) {
-        return [
-          DtcCode.getByCode("P0443"),
-          DtcCode.getByCode("P0106"),
-          DtcCode.getByCode("P0300"),
-        ];
-      }
-      return [];
+  static String? _requestHeaderFor(String ecu, ObdBusType bus) {
+    if (bus == ObdBusType.can11 && ecu.length == 3) {
+      final v = int.tryParse(ecu, radix: 16);
+      if (v != null && v >= 0x7E8 && v <= 0x7EF) return (v - 8).toRadixString(16).toUpperCase();
     }
-
-    try {
-      final res03 = await _sendCommand("03");
-      final bytes = _parseHexBytes(res03);
-      final List<DtcCode> codes = [];
-      
-      // Strip response header: Mode 03 response starts with 0x43
-      int startIdx = 0;
-      if (bytes.isNotEmpty && bytes[0] == 0x43) {
-        startIdx = 1;
-        // Some ECUs also include a DTC count byte after 0x43
-        if (bytes.length > 1 && bytes[1] < 0x10) {
-          startIdx = 2;
-        }
-      }
-
-      for (int i = startIdx; i < bytes.length - 1; i += 2) {
-        final b1 = bytes[i];
-        final b2 = bytes[i + 1];
-        if (b1 == 0 && b2 == 0) continue;
-
-        String prefix = "P";
-        final type = (b1 & 0xC0) >> 6;
-        if (type == 1) prefix = "C";
-        if (type == 2) prefix = "B";
-        if (type == 3) prefix = "U";
-
-        final digit1 = (b1 & 0x30) >> 4;
-        final digit2 = b1 & 0x0F;
-        final digit3 = (b2 & 0xF0) >> 4;
-        final digit4 = b2 & 0x0F;
-
-        final codeStr = "$prefix$digit1${digit2.toRadixString(16)}${digit3.toRadixString(16)}${digit4.toRadixString(16)}".toUpperCase();
-        codes.add(DtcCode.getByCode(codeStr));
-      }
-      return codes;
-    } catch (_) {
-      return [];
+    if (bus == ObdBusType.can29 && ecu.length == 8 && ecu.startsWith("18DAF1")) {
+      return "18DA${ecu.substring(6)}F1";
     }
+    return null;
   }
 
-  /// Kasuje kody błędów silnika (Mode 04 - Clear DTC & Check Engine)
-  Future<bool> clearDtcCodes() async {
-    if (_status == ObdConnectionStatus.simulated) {
-      return true;
+  /// Wysyła zapytanie OBD i zwraca odpowiedzi rozdzielone na sterowniki.
+  /// [broadcast] — zapytanie do wszystkich ECU (np. kody błędów),
+  /// w przeciwnym razie tylko do ECU silnika (lub [header], jeśli podano).
+  Future<List<EcuResponse>> _query(
+    String cmd, {
+    bool broadcast = false,
+    String? header,
+    bool singleFrame = false,
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
+    String? targetHeader;
+    if (broadcast) {
+      targetHeader = _functionalHeader;
+    } else {
+      targetHeader = header ?? _engineHeader;
     }
-    try {
-      await _sendCommand("04");
-      return true;
-    } catch (_) {
+    if (targetHeader != null && _isCan) await _setHeader(targetHeader);
+
+    // Liczba oczekiwanych odpowiedzi — adapter kończy od razu po pierwszej
+    // zamiast czekać na timeout magistrali (kilkukrotnie szybsze logowanie).
+    final useCount = singleFrame && !broadcast && _responseCountSupported && targetHeader != null;
+    final raw = await _sendCommand(useCount ? "${cmd}1" : cmd, timeout: timeout);
+    final responses = ElmParser.parse(raw, _bus);
+
+    if (!broadcast && header == null && _engineEcu != null) {
+      final fromEngine = responses.where((r) => r.ecu == _engineEcu).toList();
+      if (fromEngine.isNotEmpty) return fromEngine;
+    }
+    return responses;
+  }
+
+  // ===========================================================================
+  // Inicjalizacja adaptera i wykrywanie sterownika silnika
+  // ===========================================================================
+
+  Future<bool> _initializeAdapter(String transportLabel) async {
+    _updateStatus(ObdConnectionStatus.initializing, "Reset adaptera ($transportLabel)...");
+
+    await _sendCommand("ATZ", timeout: const Duration(seconds: 5));
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!_hasTransport) return false;
+
+    await _sendCommand("ATE0"); // echo off
+    await _sendCommand("ATL0"); // bez dodatkowych LF
+    await _sendCommand("ATS1"); // spacje między bajtami
+    await _sendCommand("ATH1"); // nagłówki ON — rozróżniamy sterowniki
+    await _sendCommand("ATAT1"); // adaptacyjny timeout
+    await _sendCommand("ATSP0"); // automatyczny wybór protokołu
+    _adapterId = (await _sendCommand("ATI")).replaceAll("\n", " ").trim();
+
+    _updateStatus(ObdConnectionStatus.initializing, "Wyszukiwanie protokołu OBD (do 20 s)...");
+    final raw0100 = await _sendCommand("0100", timeout: const Duration(seconds: 20));
+    _bus = ElmParser.busFromProtocolNumber(await _sendCommand("ATDPN"));
+    _protocolName = (await _sendCommand("ATDP")).trim();
+
+    final responses = ElmParser.parse(raw0100, _bus).where((r) => r.matches(0x41, [0x00])).toList();
+    if (responses.isEmpty) {
+      final hint = raw0100.toUpperCase().contains("UNABLE") || raw0100.isEmpty
+          ? "Adapter działa, ale samochód nie odpowiada. Włącz zapłon (lub silnik) i spróbuj ponownie."
+          : "Nieoczekiwana odpowiedź sterownika: ${raw0100.replaceAll('\n', ' ')}";
+      _updateStatus(ObdConnectionStatus.error, hint);
+      await _closeTransport();
       return false;
     }
-  }
 
-  /// Odczytuje dane identyfikacyjne pojazdu z ECU (Mode 09: VIN, CALID, ECUNAME) oraz protokół adaptera
-  Future<VehicleInfo?> readVehicleInfo() async {
-    if (_status == ObdConnectionStatus.simulated) {
-      if (selectedScenario == SimScenario.skodaRapidInjector) {
-        _vehicleInfo = VehicleInfo.skodaRapidSample;
-      } else if (selectedScenario == SimScenario.peugeotIdleHunting) {
-        _vehicleInfo = VehicleInfo.peugeot307Sample;
-      } else {
-        _vehicleInfo = VehicleInfo.genericSample;
+    // Wybierz ECU silnika: ten, który obsługuje RPM (PID 0C); przy remisie najniższy adres (7E8)
+    responses.sort((a, b) {
+      final aRpm = ElmParser.decodeSupportedPids(a.data).contains(0x0C) ? 0 : 1;
+      final bRpm = ElmParser.decodeSupportedPids(b.data).contains(0x0C) ? 0 : 1;
+      if (aRpm != bRpm) return aRpm.compareTo(bRpm);
+      return a.ecu.compareTo(b.ecu);
+    });
+    final engine = responses.first;
+    _engineEcu = engine.ecu == "?" ? null : engine.ecu;
+    _engineHeader = _engineEcu != null ? _requestHeaderFor(_engineEcu!, _bus) : null;
+    _activeHeader = null;
+
+    _updateStatus(ObdConnectionStatus.initializing, "Skanowanie obsługiwanych czujników...");
+    final supported = ElmParser.decodeSupportedPids(engine.data);
+    for (int range = 0x20; range <= 0xC0 && supported.contains(range); range += 0x20) {
+      final pidHex = range.toRadixString(16).padLeft(2, '0').toUpperCase();
+      final r = await _query("01$pidHex");
+      final match = r.where((e) => e.matches(0x41, [range])).firstOrNull;
+      if (match == null) break;
+      supported.addAll(ElmParser.decodeSupportedPids(match.data));
+    }
+    _supportedPids = supported;
+
+    // Mode 06 — monitory testów pokładowych; $A2-$AD to liczniki wypadania
+    // zapłonów cylindrów 1-12 (tylko CAN, silniki benzynowe).
+    if (_isCan) {
+      final mids = <int>{};
+      for (int range = 0x00; range <= 0xA0; range += 0x20) {
+        if (range > 0 && !mids.contains(range)) break;
+        final hex = range.toRadixString(16).padLeft(2, '0').toUpperCase();
+        final r = await _query("06$hex");
+        final match = r.where((e) => e.matches(0x46, [range])).firstOrNull;
+        if (match == null || match.data.length < 6) break;
+        // Format jak maska Mode 01: [46, MID, A, B, C, D]
+        mids.addAll(ElmParser.decodeSupportedPids([0x41, ...match.data.sublist(1)]));
       }
-      return _vehicleInfo;
+      _supportedMode06 = mids;
     }
 
-    try {
-      String _cleanAscii(String cmd, int mode, int pid) {
-        return ""; // placeholder
-      }
-      
-      Future<String> _readAndClean(String cmd, int expectedEchoMode) async {
-        final resp = await _sendCommand(cmd);
-        final bytes = _parseHexBytes(resp);
-        if (bytes.length > 2 && bytes[0] == expectedEchoMode) {
-          bytes.removeRange(0, 2);
-          if (bytes.isNotEmpty && bytes[0] < 10) bytes.removeAt(0); // remove message count
+    // Sprawdź, czy adapter obsługuje liczbę oczekiwanych odpowiedzi (np. "010C1")
+    if (_isCan && _engineHeader != null) {
+      await _setHeader(_engineHeader!);
+      final raw = await _sendCommand("01001");
+      _responseCountSupported = ElmParser.parse(raw, _bus).any((r) => r.matches(0x41, [0x00]));
+    }
+
+    // Ciśnienie atmosferyczne — do przeliczenia MAP na doładowanie względne
+    if (_supportedPids.contains(0x33)) {
+      final baro = await _readMode01Raw(0x33);
+      if (baro != null && baro.isNotEmpty && baro[0] > 50) _baroKpa = baro[0].toDouble();
+    }
+
+    _updateStatus(ObdConnectionStatus.initializing, "Odczyt danych pojazdu (VIN, sterownik)...");
+    await readVehicleInfo();
+
+    _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie parametrów zadanych i rzeczywistych...");
+    await _discoverChannels();
+
+    if (_vehicleInfo != null && _vehicleInfo!.profile != VehicleProfile.generic) {
+      _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie parametrów producenta (UDS)...");
+      await _probeExtendedPids(_vehicleInfo!.profile);
+    }
+
+    if (!_hasTransport) return false;
+    final ecuTxt = _engineEcu != null ? " | ECU $_engineEcu" : "";
+    _updateStatus(
+      ObdConnectionStatus.connected,
+      "Połączono ($transportLabel) • ${_discoveredPids.length} parametrów$ecuTxt | ${_vehicleInfo?.modelName ?? 'Pojazd'}",
+    );
+    return true;
+  }
+
+  bool _isSupportedByMask(ObdPid pid) {
+    final mid = pid.mode06Mid;
+    if (mid != null) return _supportedMode06.contains(mid);
+    final n = pid.mode01Pid;
+    if (n == null) return false;
+    return _supportedPids.isEmpty || _supportedPids.contains(n);
+  }
+
+  /// Wybiera źródło każdego kanału. Dla kanałów z kilkoma możliwymi PIDami
+  /// (np. BOOST: 70 → 87 → 0B) bierze pierwszy, który ECU obsługuje. PIDy
+  /// wielowartościowe są odczytywane raz, żeby sprawdzić bity obsługi —
+  /// np. PID 70 może podawać rzeczywiste doładowanie, ale nie zadane.
+  Future<void> _discoverChannels() async {
+    final rawCache = <String, List<int>?>{};
+    final list = <ObdPid>[];
+    final seen = <String>{};
+
+    for (final pid in ObdPid.standardPids) {
+      if (seen.contains(pid.shortName) || !_isSupportedByMask(pid)) continue;
+      if (pid.hasSupportByte) {
+        if (!rawCache.containsKey(pid.code)) {
+          rawCache[pid.code] = await _readPayload(pid);
         }
-        return _bytesToAscii(bytes);
+        final raw = rawCache[pid.code];
+        if (raw == null || !pid.decoder(raw).isFinite) continue;
+      }
+      seen.add(pid.shortName);
+      list.add(pid);
+    }
+    _discoveredPids = list;
+  }
+
+  /// Parametry producenta (UDS / Mode 22) — uzupełniają kanały, których nie ma
+  /// w standardzie OBD-II (np. zadane doładowanie w benzynie). Każdy jest
+  /// sprawdzany: odpowiedź pozytywna (62), wiarygodna wartość po przeliczeniu.
+  Future<void> _probeExtendedPids(VehicleProfile profile) async {
+    if (_bus != ObdBusType.can11) return;
+    final seen = _discoveredPids.map((p) => p.shortName).toSet();
+    for (final ep in ExtendedPid.channelsFor(profile)) {
+      if (!_hasTransport) return;
+      if (seen.contains(ep.shortName)) continue; // standard OBD-II ma pierwszeństwo
+      if (ep.canHeader != null && ep.canHeader!.length != 3) continue;
+
+      final payload = await _readPayload(ep);
+      if (payload == null) continue;
+      final raw = ep.decoder(payload);
+      if (!raw.isFinite) continue;
+
+      if (ep.kind == UdsValueKind.boostPressure) {
+        final scale = _detectPressureScale(raw);
+        if (scale == null) continue;
+        _udsPressureScale[ep.requestCommand] = scale;
+      }
+      final value = _transform(ep, raw);
+      if (value == null || !_isPlausible(ep.shortName, value)) continue;
+
+      _discoveredPids.add(ep);
+      seen.add(ep.shortName);
+    }
+  }
+
+  /// Skala ciśnienia doładowania z UDS wykrywana przy połączeniu (silnik stoi lub
+  /// pracuje na jałowym, więc ciśnienie ≈ atmosferyczne): wartość × skala = kPa
+  /// bezwzględne. 0 oznacza, że ECU podaje już nadciśnienie w bar.
+  final Map<String, double> _udsPressureScale = {};
+
+  static double? _detectPressureScale(double v) {
+    for (final scale in [1.0, 0.1, 100.0, 0.01]) {
+      final kpa = v * scale;
+      if (kpa >= 60 && kpa <= 140) return scale;
+    }
+    if (v.abs() <= 0.4) return 0; // już względne, w bar
+    return null;
+  }
+
+  static bool _isPlausible(String key, double v) {
+    switch (key) {
+      case "BOOST":
+      case "TARGET_BOOST":
+        return v >= -1.0 && v <= 3.5;
+      case "F_RAIL":
+      case "RAIL_TGT":
+        return v >= 0 && v <= 3000;
+      case "LAMBDA":
+      case "LAMBDA_CMD":
+        return v >= 0.5 && v <= 15;
+      case "IGN":
+        return v >= -30 && v <= 70;
+      case "EGT":
+        return v >= -40 && v <= 1200;
+      default:
+        return v.abs() < 1e6;
+    }
+  }
+
+  double? _transform(ObdPid pid, double raw) {
+    if (!raw.isFinite) return null;
+    if (pid is ExtendedPid) {
+      switch (pid.kind) {
+        case UdsValueKind.boostPressure:
+          final scale = _udsPressureScale[pid.requestCommand];
+          if (scale == null) return null;
+          if (scale == 0) return raw;
+          return (raw * scale - (_baroKpa ?? 101.3)) / 100.0;
+        case UdsValueKind.railPressure:
+          final unit = ExtendedPid.rawUnitOf(pid).toLowerCase();
+          if (unit == "kpa") return raw / 100.0;
+          if (unit == "mbar" || unit == "hpa") return raw / 1000.0;
+          if (unit == "mpa") return raw * 10.0;
+          return raw;
+        case UdsValueKind.raw:
+          return raw;
+      }
+    }
+    switch (pid.transform) {
+      case ValueTransform.absKpaToRelBar:
+        return (raw - (_baroKpa ?? 101.3)) / 100.0;
+      case ValueTransform.none:
+        return raw;
+    }
+  }
+
+  // ===========================================================================
+  // Odczyt czujników
+  // ===========================================================================
+
+  Future<List<int>?> _readMode01Raw(int pid) async {
+    final hex = pid.toRadixString(16).padLeft(2, '0').toUpperCase();
+    final r = await _query("01$hex", singleFrame: true);
+    final match = r.where((e) => e.matches(0x41, [pid])).firstOrNull;
+    return match?.data.sublist(2);
+  }
+
+  /// Wysyła zapytanie danego PIDu i zwraca bajty danych (bez usługi i numeru PID),
+  /// albo null, gdy ECU nie odpowiedziało poprawnie.
+  Future<List<int>?> _readPayload(ObdPid pid) async {
+    if (!_hasTransport) return null;
+    final cmd = pid.command.toUpperCase();
+    final header = pid is ExtendedPid ? pid.canHeader : null;
+    if (cmd.length < 4 || cmd.length.isOdd || !RegExp(r'^[0-9A-F]+$').hasMatch(cmd)) return null;
+
+    final service = int.parse(cmd.substring(0, 2), radix: 16);
+    final id = [
+      for (int i = 2; i < cmd.length; i += 2) int.parse(cmd.substring(i, i + 2), radix: 16),
+    ];
+
+    try {
+      // Odpowiedzi Mode 06 i PIDy wielowartościowe bywają wieloramkowe —
+      // wtedy bez skróconego oczekiwania na liczbę odpowiedzi.
+      final single = service != 0x06 && !pid.hasSupportByte;
+      final responses = await _query(cmd, header: header, singleFrame: single);
+      final match = responses.where((r) => r.matches(service + 0x40, id)).firstOrNull;
+      if (match == null) return null;
+      // Mode 06: rekordy testów zaczynają się od MID, więc zostawiamy go w danych
+      final payload = service == 0x06 ? match.data.sublist(1) : match.data.sublist(1 + id.length);
+      return payload.isEmpty ? null : payload;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Odczytuje wartość czujnika. Zwraca null, gdy ECU nie odpowiedziało
+  /// poprawnie — taka próbka jest pomijana zamiast zapisywać fałszywe 0.
+  Future<double?> readPid(ObdPid pid) async {
+    if (_status != ObdConnectionStatus.connected) return null;
+    final payload = await _readPayload(pid);
+    if (payload == null) return null;
+    return _transform(pid, pid.decoder(payload));
+  }
+
+  /// Odczytuje kilka kanałów naraz. Kanały dzielące to samo zapytanie
+  /// (np. zadane i rzeczywiste doładowanie z PID 70) kosztują jedno zapytanie.
+  Future<Map<String, double>> readPids(List<ObdPid> pids) async {
+    final result = <String, double>{};
+    if (_status != ObdConnectionStatus.connected) return result;
+
+    final groups = <String, List<ObdPid>>{};
+    for (final p in pids) {
+      final key = "${p is ExtendedPid ? p.canHeader ?? '' : ''}|${p.command.toUpperCase()}";
+      groups.putIfAbsent(key, () => []).add(p);
+    }
+    for (final group in groups.values) {
+      if (_status != ObdConnectionStatus.connected) break;
+      final payload = await _readPayload(group.first);
+      if (payload == null) continue;
+      for (final p in group) {
+        final v = _transform(p, p.decoder(payload));
+        if (v != null) result[p.shortName] = v;
+      }
+    }
+    // Aktualne ciśnienie atmosferyczne poprawia przeliczanie doładowania
+    final baro = result["BARO"];
+    if (baro != null && baro > 50 && baro < 120) _baroKpa = baro;
+    return result;
+  }
+
+  // ===========================================================================
+  // Kody błędów (Mode 03 / 07 / 04)
+  // ===========================================================================
+
+  String _ecuLabel(String ecu) {
+    final e = ecu.toUpperCase();
+    String? last;
+    if (_bus == ObdBusType.can11 && e.length == 3) {
+      if (e == "7E8") return "Silnik (7E8)";
+      if (e == "7E9") return "Skrzynia biegów (7E9)";
+      return "Sterownik $e";
+    }
+    if (_bus == ObdBusType.can29 && e.length == 8) last = e.substring(6);
+    if (_bus == ObdBusType.legacy) last = e;
+    if (last == "10") return "Silnik ($e)";
+    if (last == "18") return "Skrzynia biegów ($e)";
+    return e == "?" ? "Sterownik" : "Sterownik $e";
+  }
+
+  /// Odczytuje zapisane (Mode 03) i oczekujące (Mode 07) kody błędów ze wszystkich
+  /// sterowników emisyjnych. Zwraca null, gdy nie udało się odczytać pamięci błędów.
+  Future<List<DtcCode>?> readDtcCodes() async {
+    if (_status != ObdConnectionStatus.connected) return null;
+
+    final result = <DtcCode>[];
+    final seen = <String>{};
+    bool anyValidResponse = false;
+
+    for (final (mode, pending) in [("03", false), ("07", true)]) {
+      final responses = await _query(mode, broadcast: true, timeout: const Duration(seconds: 6));
+      for (final r in responses) {
+        if (r.isNegative || r.data.isEmpty) continue;
+        if (r.data[0] != int.parse(mode, radix: 16) + 0x40) continue;
+        anyValidResponse = true;
+        for (final code in ElmParser.decodeDtcs(r.data, isCan: _isCan || _bus == ObdBusType.unknown)) {
+          final key = "$code@${r.ecu}";
+          if (!seen.add(key)) continue; // oczekujący, który jest już zapisany
+          result.add(DtcCode.getByCode(code).withSource(ecuLabel: _ecuLabel(r.ecu), pending: pending));
+        }
+      }
+      if (mode == "03" && !anyValidResponse) return null;
+    }
+    return result;
+  }
+
+  /// Kasuje kody błędów (Mode 04). Zwraca true, jeśli sterownik potwierdził.
+  /// Wymaga włączonego zapłonu przy wyłączonym silniku.
+  Future<bool> clearDtcCodes() async {
+    if (_status != ObdConnectionStatus.connected) return false;
+    final responses = await _query("04", broadcast: true, timeout: const Duration(seconds: 6));
+    return responses.any((r) => r.data.isNotEmpty && r.data[0] == 0x44);
+  }
+
+  // ===========================================================================
+  // Dane pojazdu (Mode 09)
+  // ===========================================================================
+
+  Future<VehicleInfo?> readVehicleInfo() async {
+    if (!_hasTransport) return null;
+
+    try {
+      Future<List<String>> mode09(int pid, {int itemLength = 0}) async {
+        final hex = pid.toRadixString(16).padLeft(2, '0').toUpperCase();
+        final r = await _query("09$hex", timeout: const Duration(seconds: 6));
+        final match = r.where((e) => e.matches(0x49, [pid])).firstOrNull;
+        if (match == null) return const [];
+        return ElmParser.decodeMode09Strings(match.data, itemLength: itemLength);
       }
 
-      final vinAscii = await _readAndClean("0902", 0x49);
-      final calIdAscii = await _readAndClean("0904", 0x49);
-      final ecuNameAscii = await _readAndClean("090A", 0x49);
-      
-      final protocolResp = await _sendCommand("ATDP");
+      final vin = await mode09(0x02);
+      final calIds = await mode09(0x04, itemLength: 16);
+      final ecuName = await mode09(0x0A, itemLength: 20);
+
       final voltageResp = await _sendCommand("ATRV");
-      final cleanVolt = double.tryParse(voltageResp.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 12.6;
+      final volt = double.tryParse(voltageResp.replaceAll(RegExp(r'[^0-9.]'), ''));
 
-      final distResp = await _sendCommand("0131");
-      final distBytes = _parseHexBytes(distResp);
-      if (distBytes.length > 2 && distBytes[0] == 0x41) {
-         distBytes.removeRange(0, 2);
+      int? distSinceDtc;
+      if (_supportedPids.contains(0x31)) {
+        final d = await _readMode01Raw(0x31);
+        if (d != null && d.length >= 2) distSinceDtc = d[0] * 256 + d[1];
       }
-      int distSinceDtc = 0;
-      if (distBytes.length >= 2) {
-        distSinceDtc = (distBytes[0] * 256) + distBytes[1];
+      int? distMil;
+      if (_supportedPids.contains(0x21)) {
+        final d = await _readMode01Raw(0x21);
+        if (d != null && d.length >= 2) distMil = d[0] * 256 + d[1];
+      }
+      FuelType fuel = FuelType.unknown;
+      if (_supportedPids.contains(0x51)) {
+        final d = await _readMode01Raw(0x51);
+        if (d != null && d.isNotEmpty) fuel = FuelTypeExt.fromObdCode(d[0]);
       }
 
       _vehicleInfo = VehicleInfo.decodeFromRawData(
-        rawVin: vinAscii.isNotEmpty ? vinAscii : "BRAK-VIN",
-        rawCalId: calIdAscii.isNotEmpty ? calIdAscii : null,
-        rawEcuName: ecuNameAscii.isNotEmpty ? ecuNameAscii : null,
-        protocol: protocolResp.isNotEmpty ? protocolResp.trim() : null,
-        voltage: cleanVolt,
+        rawVin: vin.isNotEmpty ? vin.first : "BRAK-VIN",
+        rawCalId: calIds.isNotEmpty ? calIds.join(" / ") : null,
+        rawEcuName: ecuName.isNotEmpty ? ecuName.first : null,
+        protocol: _protocolName.isNotEmpty ? _protocolName : null,
+        voltage: volt,
         distSinceDtc: distSinceDtc,
+        distMil: distMil,
+        fuelType: fuel,
       );
+      notifyListeners();
       return _vehicleInfo;
     } catch (_) {
       return null;
     }
   }
 
-  String _extractAsciiFromHex(String response) {
-    final bytes = _parseHexBytes(response);
-    final buffer = StringBuffer();
-    for (final b in bytes) {
-      if (b >= 32 && b <= 126) {
-        buffer.writeCharCode(b);
-      }
-    }
-    return buffer.toString().trim();
-  }
-
-  /// Rozłączenie
-  void disconnect() {
-    _simulator.stopLivePull();
-    _notifySubscription?.cancel();
-    _wifiSocket?.destroy();
-    _wifiSocket = null;
-    _classicConnection?.dispose();
-    _classicConnection = null;
-    _connectedDevice?.disconnect();
-    _connectedDevice = null;
-    _writeCharacteristic = null;
-    _readCharacteristic = null;
-    _updateStatus(ObdConnectionStatus.disconnected, "Rozłączono");
+  @override
+  void dispose() {
+    _closeTransport();
+    _scanSub?.cancel();
+    super.dispose();
   }
 }
-

@@ -6,6 +6,12 @@ class DtcCode {
   final List<String> commonCauses; // Typowe przyczyny (np. w silnikach TSI)
   final List<String> diagnosticsSteps; // Kroki sprawdzenia
 
+  /// Sterownik, który zgłosił kod (np. "Silnik (7E8)"), null gdy nieznany.
+  final String? ecuLabel;
+
+  /// Kod oczekujący (Mode 07) — wykryty w bieżącym cyklu jazdy, jeszcze niepotwierdzony.
+  final bool pending;
+
   const DtcCode({
     required this.code,
     required this.title,
@@ -13,7 +19,51 @@ class DtcCode {
     required this.description,
     required this.commonCauses,
     required this.diagnosticsSteps,
+    this.ecuLabel,
+    this.pending = false,
   });
+
+  DtcCode withSource({String? ecuLabel, bool pending = false}) => DtcCode(
+        code: code,
+        title: title,
+        category: category,
+        description: description,
+        commonCauses: commonCauses,
+        diagnosticsSteps: diagnosticsSteps,
+        ecuLabel: ecuLabel,
+        pending: pending,
+      );
+
+  /// Obszar układu na podstawie litery i pierwszych cyfr kodu (SAE J2012).
+  static String systemAreaFor(String code) {
+    if (code.length < 5) return "Ogólna diagnostyka ECU";
+    final letter = code[0];
+    final generic = code[1] == '0' || code[1] == '2';
+    switch (letter) {
+      case 'P':
+        const areas = {
+          '0': "Pomiar paliwa i powietrza / układ emisji",
+          '1': "Pomiar paliwa i powietrza",
+          '2': "Wtryskiwacze / układ wtryskowy",
+          '3': "Układ zapłonowy / wypadanie zapłonów",
+          '4': "Dodatkowa kontrola emisji (EGR, EVAP, katalizator, DPF)",
+          '5': "Prędkość pojazdu / bieg jałowy / wejścia",
+          '6': "Komputer sterujący / wyjścia",
+          '7': "Skrzynia biegów",
+          '8': "Skrzynia biegów",
+          'A': "Napęd hybrydowy",
+        };
+        return "${areas[code[2]] ?? 'Układ napędowy'}${generic ? '' : ' (kod producenta)'}";
+      case 'C':
+        return "Podwozie (ABS, ESP, zawieszenie, układ kierowniczy)${generic ? '' : ' (kod producenta)'}";
+      case 'B':
+        return "Nadwozie (poduszki, klimatyzacja, komfort)${generic ? '' : ' (kod producenta)'}";
+      case 'U':
+        return "Komunikacja między sterownikami (CAN)${generic ? '' : ' (kod producenta)'}";
+      default:
+        return "Ogólna diagnostyka ECU";
+    }
+  }
 
   /// Wbudowana baza popularnych kodów błędów (ze szczególnym uwzględnieniem grupy VAG / TSI)
   static final Map<String, DtcCode> database = {
@@ -249,11 +299,13 @@ class DtcCode {
     if (database.containsKey(upper)) {
       return database[upper]!;
     }
+    final area = systemAreaFor(upper);
     return DtcCode(
       code: upper,
       title: "Kod błędu OBD-II $upper",
-      category: "Ogólna diagnostyka ECU",
-      description: "Zarejestrowano kod usterki w pamięci sterownika silnika.",
+      category: area,
+      description: "Zarejestrowano kod usterki w pamięci sterownika. Obszar: $area. "
+          "Tego kodu nie ma w wbudowanej bazie — sprawdź jego dokładne znaczenie dla swojego modelu.",
       commonCauses: [
         "Usterka czujnika, osprzętu silnika lub instalacji elektrycznej",
         "Wartość pomiarowa poza zakresem tolerancji sterownika",

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/extended_pid.dart';
 import '../models/obd_pid.dart';
 import '../services/datalogger_service.dart';
 import '../services/obd_service.dart';
@@ -7,6 +8,17 @@ import '../theme/app_theme.dart';
 
 class SensorSelectScreen extends StatelessWidget {
   const SensorSelectScreen({super.key});
+
+  static String _rateLabel(PollRate r) {
+    switch (r) {
+      case PollRate.fast:
+        return "odczyt co cykl";
+      case PollRate.normal:
+        return "co 2 cykle";
+      case PollRate.slow:
+        return "wolny (co 8 cykli)";
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -123,7 +135,7 @@ class SensorSelectScreen extends StatelessWidget {
                       ),
                     ),
                     subtitle: Text(
-                      "Kod: ${pid.code} | Jednostka: ${pid.unit} | Zakres: ${pid.minExpected.toInt()}..${pid.maxExpected.toInt()}",
+                      "${pid is ExtendedPid ? 'UDS producenta ${pid.requestCommand}' : 'OBD-II ${pid.code}'} | ${pid.unit} | ${_rateLabel(pid.rate)}",
                       style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
                     ),
                     trailing: Switch(
@@ -142,9 +154,6 @@ class SensorSelectScreen extends StatelessWidget {
   }
 
   Widget _buildSamplingInfoCard(int selectedCount) {
-    // Na vLinker MC+ średni czas na 1 zapytanie PID po magistrali CAN to ok. 10-15ms
-    final estHz = (selectedCount > 0) ? (250.0 / (selectedCount * 12.0)).clamp(5.0, 45.0) : 0.0;
-
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -172,13 +181,13 @@ class SensorSelectScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 2),
-                Text(
-                  "Szacowana prędkość odświeżania na vLinker MC+: ~${estHz.toStringAsFixed(0)} próbek/s (Hz)",
-                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                const Text(
+                  "Szybkie kanały (obroty, pedał, doładowanie) są odczytywane w każdym cyklu, temperatury rzadziej. Rzeczywistą częstotliwość widać w Rejestratorze.",
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
                 ),
                 const SizedBox(height: 4),
                 const Text(
-                  "Wskazówka: Do logowania WOT na jednym biegu wybierz 4-6 parametrów, aby uzyskać gęsty i precyzyjny wykres.",
+                  "Wskazówka: profil „Diagnostyka automatyczna” zbiera wszystko, czego potrzebuje Asystent.",
                   style: TextStyle(color: AppTheme.textMuted, fontSize: 11, fontStyle: FontStyle.italic),
                 ),
               ],

@@ -5,9 +5,7 @@ import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
 import 'package:provider/provider.dart';
 import '../models/dtc_code.dart';
 import '../models/vehicle_info.dart';
-import '../services/datalogger_service.dart';
 import '../services/obd_service.dart';
-import '../services/simulator_service.dart';
 import '../theme/app_theme.dart';
 
 class ConnectionScreen extends StatefulWidget {
@@ -19,11 +17,12 @@ class ConnectionScreen extends StatefulWidget {
 
 class _ConnectionScreenState extends State<ConnectionScreen> {
   List<ScanResult> _scanResults = [];
-  bool _isScanning = false;
   List<fbs.BluetoothDevice> _classicDevices = [];
   bool _isLoadingClassic = false;
+  String? _classicError;
   List<DtcCode>? _scannedDtcCodes;
   bool _isLoadingDtc = false;
+  bool _dtcReadFailed = false;
 
   @override
   void initState() {
@@ -31,53 +30,113 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     _loadClassicDevices();
   }
 
-  void _loadClassicDevices() async {
-    setState(() => _isLoadingClassic = true);
+  Future<void> _loadClassicDevices() async {
+    setState(() {
+      _isLoadingClassic = true;
+      _classicError = null;
+    });
     try {
+      // Android 12+: bez BLUETOOTH_CONNECT lista sparowanych urządzeń jest pusta
+      await [Permission.bluetoothConnect, Permission.bluetoothScan].request();
       final devices = await fbs.FlutterBluetoothSerial.instance.getBondedDevices();
       if (mounted) setState(() => _classicDevices = devices);
-    } catch (_) {}
+    } catch (e) {
+      if (mounted) setState(() => _classicError = "Nie udało się pobrać listy sparowanych urządzeń: $e");
+    }
     if (mounted) setState(() => _isLoadingClassic = false);
   }
 
-  void _startScan(ObdService obd) async {
-    Map<Permission, PermissionStatus> statuses = await [
+  Future<void> _startScan(ObdService obd) async {
+    final statuses = await [
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
       Permission.location,
     ].request();
 
-    if (statuses[Permission.bluetoothScan]?.isDenied ?? false) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Brak uprawnien do skanowania Bluetooth')));
-      }
+    if ((statuses[Permission.bluetoothScan]?.isDenied ?? false) ||
+        (statuses[Permission.bluetoothScan]?.isPermanentlyDenied ?? false)) {
+      _showSnack("Brak uprawnień do skanowania Bluetooth", AppTheme.red);
       return;
     }
 
-    setState(() {
-      _scanResults.clear();
-      _isScanning = true;
+    setState(() => _scanResults = []);
+    final error = await obd.startScan(onResults: (results) {
+      if (mounted) setState(() => _scanResults = results);
     });
+    if (error != null) _showSnack(error, AppTheme.red);
+  }
 
-    await obd.startScan(onResults: (results) {
-      if (mounted) {
-        setState(() {
-          _scanResults = results;
-        });
-      }
-    });
-
-    if (mounted) {
-      setState(() {
-        _isScanning = false;
-      });
+  Future<void> _connect(Future<bool> Function() action) async {
+    final ok = await action();
+    if (!mounted) return;
+    final obd = context.read<ObdService>();
+    if (ok) {
+      setState(() => _scannedDtcCodes = null);
+    } else {
+      _showSnack(obd.statusMessage, AppTheme.red);
     }
+  }
+
+  void _showSnack(String msg, Color color) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: color));
+  }
+
+  Future<void> _readDtc(ObdService obd) async {
+    setState(() => _isLoadingDtc = true);
+    final codes = await obd.readDtcCodes();
+    if (!mounted) return;
+    setState(() {
+      _isLoadingDtc = false;
+      _dtcReadFailed = codes == null;
+      _scannedDtcCodes = codes;
+    });
+    if (codes == null) {
+      _showSnack(
+        obd.status == ObdConnectionStatus.connected
+            ? "Sterownik nie odpowiedział na zapytanie o kody błędów."
+            : "Najpierw połącz się z samochodem.",
+        AppTheme.red,
+      );
+    }
+  }
+
+  Future<void> _clearDtc(ObdService obd) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Text("Skasować kody błędów?", style: TextStyle(color: AppTheme.textPrimary)),
+        content: const Text(
+          "Zapłon musi być włączony, a silnik wyłączony. Skasowanie usuwa też dane "
+          "gotowości (readiness) i zapisane zamrożone ramki — nie usuwa przyczyny usterki.",
+          style: TextStyle(color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Anuluj")),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("Skasuj", style: TextStyle(color: AppTheme.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final ok = await obd.clearDtcCodes();
+    if (!mounted) return;
+    _showSnack(
+      ok
+          ? "Sterownik potwierdził skasowanie błędów."
+          : "Sterownik nie potwierdził kasowania. Wyłącz silnik (zapłon ON) i spróbuj ponownie.",
+      ok ? AppTheme.green : AppTheme.red,
+    );
+    if (ok) await _readDtc(obd);
   }
 
   @override
   Widget build(BuildContext context) {
-    final obd = Provider.of<ObdService>(context);
-    final logger = Provider.of<DataloggerService>(context);
+    final obd = context.watch<ObdService>();
 
     return Scaffold(
       appBar: AppBar(
@@ -129,15 +188,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             // Sekcja Diagnostyki Błędów Silnika (DTC / Check Engine)
             _buildDtcScannerSection(obd),
 
-            const SizedBox(height: 24),
-
-            // Sekcja Wbudowanego Symulatora
-            _buildSimulatorSection(obd, logger),
           ],
         ),
       ),
     );
   }
+
+  bool _isBusy(ObdService obd) =>
+      obd.status == ObdConnectionStatus.connecting || obd.status == ObdConnectionStatus.initializing;
 
   Widget _buildStatusCard(ObdService obd) {
     Color badgeColor;
@@ -148,13 +206,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         badgeColor = AppTheme.green;
         badgeIcon = Icons.check_circle;
         break;
-      case ObdConnectionStatus.simulated:
-        badgeColor = AppTheme.cyan;
-        badgeIcon = Icons.sports_motorsports;
-        break;
       case ObdConnectionStatus.connecting:
       case ObdConnectionStatus.initializing:
-      case ObdConnectionStatus.scanning:
         badgeColor = AppTheme.yellow;
         badgeIcon = Icons.sync;
         break;
@@ -205,10 +258,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+                if (obd.status == ObdConnectionStatus.connected && obd.adapterId.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    "Adapter: ${obd.adapterId}${obd.protocolName.isNotEmpty ? ' • ${obd.protocolName}' : ''}",
+                    style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
+                  ),
+                ],
               ],
             ),
           ),
-          if (obd.status == ObdConnectionStatus.connected || obd.status == ObdConnectionStatus.simulated)
+          if (obd.status == ObdConnectionStatus.connected)
             IconButton(
               icon: const Icon(Icons.close, color: AppTheme.red),
               tooltip: "Rozłącz",
@@ -244,7 +304,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         ),
         const SizedBox(height: 12),
         ElevatedButton.icon(
-          onPressed: () => obd.connectWifi(),
+          onPressed: _isBusy(obd) ? null : () => _connect(() => obd.connectWifi()),
           icon: const Icon(Icons.wifi_tethering),
           label: const Text("Połącz przez Wi-Fi"),
           style: ElevatedButton.styleFrom(
@@ -284,8 +344,22 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         const SizedBox(height: 12),
         if (_isLoadingClassic)
           const CircularProgressIndicator()
-        else if (_classicDevices.isEmpty)
-          const Text("Brak sparowanych urządzeń. Sparuj w opcjach telefonu i zrestartuj apkę.", style: TextStyle(color: AppTheme.red))
+        else if (_classicError != null || _classicDevices.isEmpty)
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _classicError ?? "Brak sparowanych urządzeń. Sparuj adapter w ustawieniach Bluetooth telefonu.",
+                  style: const TextStyle(color: AppTheme.red),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.refresh, color: AppTheme.cyan),
+                tooltip: "Odśwież listę",
+                onPressed: _loadClassicDevices,
+              ),
+            ],
+          )
         else
           ListView.builder(
             shrinkWrap: true,
@@ -300,7 +374,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   title: Text(d.name ?? "Nieznane urządzenie", style: const TextStyle(color: Colors.white)),
                   subtitle: Text(d.address, style: const TextStyle(color: AppTheme.textMuted)),
                   trailing: ElevatedButton(
-                    onPressed: () => obd.connectClassic(d),
+                    onPressed: _isBusy(obd) ? null : () => _connect(() => obd.connectClassic(d)),
                     style: ElevatedButton.styleFrom(backgroundColor: AppTheme.cyan, foregroundColor: Colors.black),
                     child: const Text("Połącz"),
                   ),
@@ -337,15 +411,15 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         ),
         const SizedBox(height: 12),
         ElevatedButton.icon(
-          onPressed: _isScanning ? () => obd.stopScan() : () => _startScan(obd),
-          icon: _isScanning
+          onPressed: obd.isScanning ? () => obd.stopScan() : () => _startScan(obd),
+          icon: obd.isScanning
               ? const SizedBox(
                   width: 16,
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                 )
               : const Icon(Icons.search),
-          label: Text(_isScanning ? "Zatrzymaj szukanie" : "Wyszukaj vLinker MC+"),
+          label: Text(obd.isScanning ? "Zatrzymaj szukanie" : "Wyszukaj adapter BLE (vLinker MC+)"),
           style: ElevatedButton.styleFrom(
             backgroundColor: AppTheme.blue,
             foregroundColor: Colors.white,
@@ -393,7 +467,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
                   ),
                   trailing: ElevatedButton(
-                    onPressed: () => obd.connectDevice(r.device),
+                    onPressed: _isBusy(obd) ? null : () => _connect(() => obd.connectDevice(r.device)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: isVlinker ? AppTheme.cyan : AppTheme.surfaceLight,
                       foregroundColor: isVlinker ? Colors.black : Colors.white,
@@ -455,9 +529,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             ],
           ),
           const SizedBox(height: 8),
-          const Text(
-            "AutoCheck skanuje sterownik silnika (Mode 01 PID 00, 20, 40) i udostępnia tylko te parametry, które fizycznie obsługuje Twoje auto.",
-            style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+          Text(
+            obd.status == ObdConnectionStatus.connected
+                ? "Parametry, które zgłosił sterownik silnika${obd.engineEcuAddress != null ? ' (${obd.engineEcuAddress})' : ''} w masce obsługiwanych PID-ów. Tylko te są odpytywane podczas logowania."
+                : "Po połączeniu AutoCheck odczyta maskę obsługiwanych PID-ów ze sterownika silnika i pokaże tylko te parametry, które auto faktycznie udostępnia.",
+            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
           ),
           const SizedBox(height: 12),
           Wrap(
@@ -477,120 +553,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 ),
               );
             }).toList(),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSimulatorSection(ObdService obd, DataloggerService logger) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.cyan.withAlpha(80)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(Icons.sports_motorsports, color: AppTheme.cyan, size: 20),
-              SizedBox(width: 8),
-              Text(
-                "Wbudowany Symulator Jazdy & Usterek",
-                style: TextStyle(
-                  color: AppTheme.textPrimary,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            "Pozwala przetestować działanie wykresów, logowanie i algorytmy diagnostyczne w domu bez podłączania samochodu.",
-            style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-          ),
-          const SizedBox(height: 14),
-          DropdownButtonFormField<SimScenario>(
-            initialValue: obd.selectedScenario,
-            dropdownColor: AppTheme.surfaceLight,
-            decoration: InputDecoration(
-              labelText: "Wybierz scenariusz testowy",
-              labelStyle: const TextStyle(color: AppTheme.cyan),
-              filled: true,
-              fillColor: AppTheme.surfaceLight,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            items: SimScenario.values.map((s) {
-              return DropdownMenuItem(
-                value: s,
-                child: Text(
-                  s.title,
-                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              );
-            }).toList(),
-            onChanged: (val) {
-              if (val != null) {
-                obd.selectedScenario = val;
-              }
-            },
-          ),
-          const SizedBox(height: 8),
-          Text(
-            obd.selectedScenario.description,
-            style: const TextStyle(color: AppTheme.textMuted, fontSize: 12, fontStyle: FontStyle.italic),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    obd.connectSimulator(obd.selectedScenario);
-                    logger.loadDemoRun(obd.selectedScenario);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text("Załadowano log demonstracyjny: ${obd.selectedScenario.title}"),
-                        backgroundColor: AppTheme.cyan,
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.analytics),
-                  label: const Text("Pokaż wykres logu"),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.cyan,
-                    foregroundColor: Colors.black,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    obd.connectSimulator(obd.selectedScenario);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Włączono symulator na żywo. Przejdź do zakładki 'Rejestrator' i kliknij START!"),
-                        backgroundColor: AppTheme.green,
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text("Symuluj na żywo"),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppTheme.green,
-                    side: const BorderSide(color: AppTheme.green),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
-              ),
-            ],
           ),
         ],
       ),
@@ -655,18 +617,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: _isLoadingDtc
-                      ? null
-                      : () async {
-                          setState(() => _isLoadingDtc = true);
-                          final codes = await obd.readDtcCodes();
-                          if (mounted) {
-                            setState(() {
-                              _scannedDtcCodes = codes;
-                              _isLoadingDtc = false;
-                            });
-                          }
-                        },
+                  onPressed: _isLoadingDtc ? null : () => _readDtc(obd),
                   icon: _isLoadingDtc
                       ? const SizedBox(
                           width: 14,
@@ -684,18 +635,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               ),
               const SizedBox(width: 8),
               OutlinedButton.icon(
-                onPressed: () async {
-                  final ok = await obd.clearDtcCodes();
-                  if (mounted) {
-                    setState(() => _scannedDtcCodes = []);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(ok ? "Wysłano polecenie skasowania błędów (Check Engine zgaszony)." : "Błąd kasowania"),
-                        backgroundColor: AppTheme.green,
-                      ),
-                    );
-                  }
-                },
+                onPressed: _isLoadingDtc ? null : () => _clearDtc(obd),
                 icon: const Icon(Icons.delete_outline, size: 18),
                 label: const Text("Skasuj"),
                 style: OutlinedButton.styleFrom(
@@ -706,6 +646,13 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               ),
             ],
           ),
+          if (_dtcReadFailed) ...[
+            const SizedBox(height: 12),
+            const Text(
+              "Nie udało się odczytać pamięci błędów. Sprawdź połączenie i włącz zapłon.",
+              style: TextStyle(color: AppTheme.red, fontSize: 12),
+            ),
+          ],
           if (_scannedDtcCodes != null) ...[
             const SizedBox(height: 12),
             if (_scannedDtcCodes!.isEmpty)
@@ -722,7 +669,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        "Brak zarejestrowanych kodów usterek w pamięci ECU.",
+                        "Brak zapisanych i oczekujących kodów usterek w sterownikach.",
                         style: TextStyle(color: AppTheme.green, fontSize: 13, fontWeight: FontWeight.bold),
                       ),
                     ),
@@ -736,13 +683,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 itemCount: _scannedDtcCodes!.length,
                 itemBuilder: (context, idx) {
                   final dtc = _scannedDtcCodes![idx];
+                  final accent = dtc.pending ? AppTheme.orange : AppTheme.red;
                   return Container(
                     margin: const EdgeInsets.only(bottom: 8),
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       color: AppTheme.surfaceLight,
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: AppTheme.red.withAlpha(120)),
+                      border: Border.all(color: accent.withAlpha(120)),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -752,7 +700,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(
-                                color: AppTheme.red,
+                                color: accent,
                                 borderRadius: BorderRadius.circular(6),
                               ),
                               child: Text(
@@ -778,7 +726,22 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                             ),
                           ],
                         ),
+                        if (dtc.ecuLabel != null || dtc.pending) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            [
+                              if (dtc.ecuLabel != null) "Źródło: ${dtc.ecuLabel}",
+                              if (dtc.pending) "OCZEKUJĄCY (wykryty w tym cyklu jazdy, niepotwierdzony)",
+                            ].join("  •  "),
+                            style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.bold),
+                          ),
+                        ],
                         const SizedBox(height: 6),
+                        Text(
+                          "Obszar: ${dtc.category}",
+                          style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
+                        ),
+                        const SizedBox(height: 4),
                         Text(
                           dtc.description,
                           style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
@@ -867,10 +830,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               IconButton(
                 icon: const Icon(Icons.sync, color: AppTheme.cyan, size: 22),
                 tooltip: "Odśwież dane pojazdu z ECU (Mode 09)",
-                onPressed: () async {
-                  await obd.readVehicleInfo();
-                  if (mounted) setState(() {});
-                },
+                onPressed: () => obd.readVehicleInfo(),
               ),
             ],
           ),
@@ -894,13 +854,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             label: "Jednostka napędowa",
             value: v.engineDescription,
           ),
+          if (v.fuelType != FuelType.unknown && !v.engineDescription.contains(v.fuelType.label)) ...[
+            const SizedBox(height: 8),
+            _buildInfoRow(icon: Icons.local_gas_station, label: "Paliwo", value: v.fuelType.label),
+          ],
           const SizedBox(height: 8),
 
           // Sterownik ECU & CALID
           _buildInfoRow(
             icon: Icons.memory,
             label: "Sterownik silnika",
-            value: "${v.ecuName} (Soft: ${v.calibrationId})",
+            value: "${v.ecuName}\nSoft (CALID): ${v.calibrationId}",
             valueColor: AppTheme.purple,
           ),
           const SizedBox(height: 8),

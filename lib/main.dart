@@ -14,8 +14,8 @@ void main() {
   runApp(
     MultiProvider(
       providers: [
+        ChangeNotifierProvider.value(value: obdService),
         ChangeNotifierProvider.value(value: dataloggerService),
-        Provider.value(value: obdService),
       ],
       child: const AutoCheckApp(),
     ),
@@ -28,7 +28,7 @@ class AutoCheckApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: "AutoCheck - vLinker MC+ OBD2",
+      title: "AutoCheck - OBD2",
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
       home: const MainTabScreen(),
