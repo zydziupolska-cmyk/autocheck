@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
@@ -14,25 +15,30 @@ import '../models/trip_report.dart';
 class DataloggerService extends ChangeNotifier {
   final ObdService obdService;
 
+  /// Czy zapisywać historię logów na dysku (wyłączane w testach).
+  final bool persistHistory;
+
   bool _isRecording = false;
   List<LogPoint> _currentPoints = [];
   List<Anomaly> _detectedAnomalies = [];
   final List<LogSession> _sessionsHistory = [];
   LogSession? _activeSession;
-  Timer? _pollTimer;
   DateTime? _recordingStartTime;
+  String? _recordingWarning;
 
   // Wybrane czujniki do logowania
   Set<String> _selectedPidKeys = {"RPM", "BOOST", "MAF", "IGN", "TPS", "AFR"};
 
-  // Licznik częstotliwości próbkowania (Hz)
+  // Częstotliwość próbkowania (pełnych cykli odczytu na sekundę)
   int _samplesCountLastSec = 0;
   double _currentHz = 0.0;
   DateTime _lastHzCheck = DateTime.now();
 
-  DataloggerService({required this.obdService}) {
-    // Wczytaj początkowy wzorcowy log
-    loadDemoRun(SimScenario.boostLeak);
+  ObdConnectionStatus? _lastObdStatus;
+
+  DataloggerService({required this.obdService, this.persistHistory = true}) {
+    obdService.addListener(_onObdChanged);
+    if (persistHistory) _loadHistory();
   }
 
   bool get isRecording => _isRecording;
@@ -42,6 +48,43 @@ class DataloggerService extends ChangeNotifier {
   LogSession? get activeSession => _activeSession;
   Set<String> get selectedPidKeys => _selectedPidKeys;
   double get currentHz => _currentHz;
+
+  /// Ostrzeżenie w trakcie nagrywania (np. ECU przestało odpowiadać).
+  String? get recordingWarning => _recordingWarning;
+
+  bool get _isDiesel => obdService.vehicleInfo?.isDiesel ?? false;
+
+  /// Po połączeniu z prawdziwym autem dopasuj wybór czujników do tego, co obsługuje ECU.
+  void _onObdChanged() {
+    final status = obdService.status;
+    if (status == _lastObdStatus) return;
+    _lastObdStatus = status;
+
+    if (status == ObdConnectionStatus.connected) {
+      final available = obdService.discoveredPids.map((p) => p.shortName).toSet();
+      var selection = _selectedPidKeys.where(available.contains).toSet();
+      if (selection.length < 3) {
+        // Rozsądny domyślny zestaw zależnie od rodzaju silnika
+        final defaults = _isDiesel
+            ? ["RPM", "BOOST", "MAF", "PEDAL", "LOAD", "IAT", "ECT", "SPEED"]
+            : ["RPM", "BOOST", "MAF", "IGN", "TPS", "PEDAL", "STFT", "LTFT", "IAT"];
+        selection = {...selection, ...defaults.where(available.contains)};
+      }
+      if (_isDiesel) {
+        // W dieslu TPS to klapa dławiąca — zamiast niej logujemy pedał gazu
+        if (available.contains("PEDAL")) selection.add("PEDAL");
+        selection.remove("AFR");
+      }
+      if (selection.isEmpty && available.isNotEmpty) selection = {available.first};
+      _selectedPidKeys = selection;
+      notifyListeners();
+    } else if (_isRecording &&
+        status != ObdConnectionStatus.simulated &&
+        status != ObdConnectionStatus.connected) {
+      // Utracono połączenie w trakcie nagrywania — zachowaj to, co już zebrano
+      stopRecording();
+    }
+  }
 
   void togglePid(String shortName) {
     if (_selectedPidKeys.contains(shortName)) {
@@ -55,14 +98,18 @@ class DataloggerService extends ChangeNotifier {
   }
 
   void applyPreset(LoggingPreset preset) {
-    _selectedPidKeys = Set.from(preset.pidShortNames);
+    final available = obdService.discoveredPids.map((p) => p.shortName).toSet();
+    final filtered = preset.pidShortNames.where(available.contains).toSet();
+    _selectedPidKeys = filtered.isNotEmpty ? filtered : {"RPM"};
     notifyListeners();
   }
 
-  /// Rozpoczyna nagrywanie logu z przyspieszenia
+  /// Rozpoczyna nagrywanie logu
   void startRecording() {
-    _currentPoints.clear();
-    _detectedAnomalies.clear();
+    if (_isRecording) return;
+    _currentPoints = [];
+    _detectedAnomalies = [];
+    _recordingWarning = null;
     _isRecording = true;
     _lastHzCheck = DateTime.now();
     _samplesCountLastSec = 0;
@@ -77,83 +124,89 @@ class DataloggerService extends ChangeNotifier {
         onFinished: stopRecording,
       );
     } else if (obdService.status == ObdConnectionStatus.connected) {
-      // Prawdziwe połączenie OBD — cyklicznie odpytuj czujniki
-      _startObdPolling();
+      _runObdLoop();
+    } else {
+      _isRecording = false;
+      _recordingWarning = "Brak połączenia z adapterem — połącz się w zakładce „Połączenie”.";
+      notifyListeners();
     }
   }
 
-  /// Pętla odpytywania prawdziwych czujników OBD z samochodu
-  void _startObdPolling() {
-    _pollTimer?.cancel();
-    // Uruchom sekwencyjną pętlę (nie Timer.periodic!) żeby uniknąć nakładania się komend OBD
-    _runObdLoop();
-  }
-
+  /// Pętla odpytywania czujników — sekwencyjna, bez nakładania się komend.
   Future<void> _runObdLoop() async {
+    int failedCycles = 0;
     while (_isRecording && obdService.status == ObdConnectionStatus.connected) {
-      try {
-        final values = <String, double>{};
-        
-        // Odpytaj każdy wybrany czujnik SEKWENCYJNIE — czekaj na odpowiedź przed wysłaniem następnego
-        for (final pidKey in _selectedPidKeys) {
-          if (!_isRecording) break;
-          
-          final pid = obdService.discoveredPids
-              .where((p) => p.shortName == pidKey)
-              .firstOrNull;
-          if (pid != null) {
-            final value = await obdService.readPid(pid);
-            values[pidKey] = value;
-          }
-        }
+      final values = <String, double>{};
+      final pids = obdService.discoveredPids.where((p) => _selectedPidKeys.contains(p.shortName)).toList();
 
-        if (values.isNotEmpty && _isRecording) {
-          final elapsed = DateTime.now().difference(_recordingStartTime!).inMilliseconds.toDouble();
-          addPoint(LogPoint(timeMs: elapsed, values: values));
+      for (final pid in pids) {
+        if (!_isRecording) break;
+        final value = await obdService.readPid(pid);
+        // Brak odpowiedzi = brak wartości (a nie 0), żeby nie fałszować wykresu i analizy
+        if (value != null) values[pid.shortName] = value;
+      }
+
+      if (!_isRecording) break;
+      if (values.isNotEmpty) {
+        failedCycles = 0;
+        if (_recordingWarning != null) _recordingWarning = null;
+        final elapsed = DateTime.now().difference(_recordingStartTime!).inMilliseconds.toDouble();
+        addPoint(LogPoint(timeMs: elapsed, values: values));
+      } else {
+        failedCycles++;
+        if (failedCycles == 3) {
+          _recordingWarning = "Sterownik nie odpowiada na zapytania. Sprawdź, czy zapłon jest włączony.";
+          notifyListeners();
         }
-      } catch (_) {
-        // Ignoruj pojedyncze błędy odczytu, próbuj dalej
-        await Future.delayed(const Duration(milliseconds: 100));
+        await Future.delayed(const Duration(milliseconds: 250));
       }
     }
   }
 
   /// Zatrzymuje nagrywanie i natychmiast analizuje log
   void stopRecording() {
-    if (!_isRecording && _currentPoints.isEmpty) return;
+    if (!_isRecording) return;
     _isRecording = false;
-    _pollTimer?.cancel();
-    _pollTimer = null;
     obdService.simulator.stopLivePull();
 
-    // Wykonaj inteligentną analizę usterek
-    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints);
+    final isDiesel = _isDiesel;
+    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: isDiesel);
 
     if (_currentPoints.isNotEmpty) {
+      final now = DateTime.now();
+      final info = obdService.vehicleInfo;
+      final isSim = obdService.status == ObdConnectionStatus.simulated;
+      final usedKeys = <String>{for (final p in _currentPoints) ...p.values.keys};
       final session = LogSession(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        title: "Log ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}:${DateTime.now().second.toString().padLeft(2, '0')} (${_currentPoints.length} próbek)",
-        createdAt: DateTime.now(),
-        activePidKeys: List.from(_selectedPidKeys),
+        id: now.millisecondsSinceEpoch.toString(),
+        title: "${isSim ? 'Symulacja' : 'Log'} ${_two(now.hour)}:${_two(now.minute)}:${_two(now.second)} (${_currentPoints.length} próbek)",
+        createdAt: now,
+        activePidKeys: _selectedPidKeys.where(usedKeys.contains).toList(),
         points: List.from(_currentPoints),
+        isDiesel: isDiesel,
+        vehicleLabel: info != null ? "${info.manufacturer} ${info.modelName} • ${info.vin}" : null,
       );
       _activeSession = session;
       _sessionsHistory.insert(0, session);
+      if (persistHistory) _saveSession(session);
     }
 
     notifyListeners();
   }
 
+  static String _two(int v) => v.toString().padLeft(2, '0');
+
   TripReport stopAndGenerateTripReport() {
     stopRecording();
-    if (_activeSession == null || _activeSession!.points.isEmpty) {
+    final session = _activeSession;
+    if (session == null || session.points.isEmpty) {
       return const TripReport(
         duration: Duration.zero, distanceKm: 0, totalPoints: 0,
         maxRpm: 0, maxBoostBar: 0, maxEctC: 0, maxIatC: 0, avgLtft: 0,
         aggregatedAnomalies: [], healthScore: 100,
       );
     }
-    return AnomalyEngine.generateTripReport(_activeSession!.points);
+    return AnomalyEngine.generateTripReport(session.points, isDiesel: session.isDiesel);
   }
 
   /// Dodaje nowy punkt pomiarowy z OBD lub Symulatora
@@ -162,8 +215,9 @@ class DataloggerService extends ChangeNotifier {
     _samplesCountLastSec++;
 
     final now = DateTime.now();
-    if (now.difference(_lastHzCheck).inMilliseconds >= 1000) {
-      _currentHz = _samplesCountLastSec * 1000.0 / now.difference(_lastHzCheck).inMilliseconds;
+    final elapsedMs = now.difference(_lastHzCheck).inMilliseconds;
+    if (elapsedMs >= 1000) {
+      _currentHz = _samplesCountLastSec * 1000.0 / elapsedMs;
       _samplesCountLastSec = 0;
       _lastHzCheck = now;
     }
@@ -173,43 +227,105 @@ class DataloggerService extends ChangeNotifier {
 
   /// Ładuje gotowy log demonstracyjny do natychmiastowej analizy
   void loadDemoRun(SimScenario scenario) {
-    _isRecording = false;
+    if (_isRecording) stopRecording();
     _currentPoints = SimulatorService.generateFullRun(scenario);
     _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints);
+    final keys = <String>{for (final p in _currentPoints) ...p.values.keys};
 
-    final session = LogSession(
+    _activeSession = LogSession(
       id: "demo_${scenario.name}",
-      title: scenario.title,
+      title: "DEMO: ${scenario.title}",
       createdAt: DateTime.now(),
-      activePidKeys: List.from(_selectedPidKeys),
+      activePidKeys: keys.toList(),
       points: List.from(_currentPoints),
+      isDemo: true,
     );
-    _activeSession = session;
     notifyListeners();
   }
 
   void selectSession(LogSession session) {
+    if (_isRecording) return;
     _activeSession = session;
     _currentPoints = List.from(session.points);
-    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints);
+    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: session.isDiesel);
     notifyListeners();
   }
 
-  /// Eksportuje sesję do pliku CSV i otwiera systemowe udostępnianie (WhatsApp/E-mail)
+  Future<void> deleteSession(LogSession session) async {
+    _sessionsHistory.removeWhere((s) => s.id == session.id);
+    if (_activeSession?.id == session.id) {
+      _activeSession = null;
+      _currentPoints = [];
+      _detectedAnomalies = [];
+    }
+    notifyListeners();
+    if (!persistHistory) return;
+    try {
+      final file = File("${(await _historyDir()).path}/${session.id}.json");
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trwała historia logów (pliki JSON w katalogu aplikacji)
+  // ---------------------------------------------------------------------------
+
+  Future<Directory> _historyDir() async {
+    final docs = await getApplicationDocumentsDirectory();
+    final dir = Directory("${docs.path}/sessions");
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
+  }
+
+  Future<void> _saveSession(LogSession session) async {
+    try {
+      final file = File("${(await _historyDir()).path}/${session.id}.json");
+      await file.writeAsString(jsonEncode(session.toJson()));
+    } catch (e) {
+      if (kDebugMode) debugPrint("Błąd zapisu logu: $e");
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    try {
+      final dir = await _historyDir();
+      final loaded = <LogSession>[];
+      await for (final entity in dir.list()) {
+        if (entity is! File || !entity.path.endsWith(".json")) continue;
+        try {
+          final json = jsonDecode(await entity.readAsString()) as Map<String, dynamic>;
+          loaded.add(LogSession.fromJson(json));
+        } catch (_) {
+          // Uszkodzony plik — pomiń
+        }
+      }
+      loaded.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      final existing = _sessionsHistory.map((s) => s.id).toSet();
+      _sessionsHistory.addAll(loaded.where((s) => !existing.contains(s.id)));
+      _sessionsHistory.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      notifyListeners();
+    } catch (e) {
+      if (kDebugMode) debugPrint("Błąd odczytu historii: $e");
+    }
+  }
+
+  /// Eksportuje aktywną sesję do pliku CSV i otwiera systemowe udostępnianie (WhatsApp/E-mail)
   Future<String?> exportAndShareCsv() async {
     if (_currentPoints.isEmpty) return null;
 
-    final StringBuffer buffer = StringBuffer();
-    // Nagłówki
-    final headers = ["Time_ms", "Time_s", ..._selectedPidKeys];
-    buffer.writeln(headers.join(","));
+    // Kolumny z sesji (a nie z bieżącego wyboru), żeby pasowały do danych
+    final keys = _activeSession?.activePidKeys.isNotEmpty == true
+        ? _activeSession!.activePidKeys
+        : <String>{for (final p in _currentPoints) ...p.values.keys}.toList();
 
-    // Wiersze
+    final StringBuffer buffer = StringBuffer();
+    buffer.writeln(["Time_ms", "Time_s", ...keys].join(","));
     for (final p in _currentPoints) {
       final row = [
         p.timeMs.toStringAsFixed(0),
         p.timeSec.toStringAsFixed(3),
-        ..._selectedPidKeys.map((k) => p.values[k]?.toStringAsFixed(2) ?? "0.0"),
+        // Brak odczytu = pusta komórka (a nie fałszywe 0)
+        ...keys.map((k) => p.values[k]?.toStringAsFixed(2) ?? ""),
       ];
       buffer.writeln(row.join(","));
     }
@@ -217,23 +333,29 @@ class DataloggerService extends ChangeNotifier {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final now = DateTime.now();
-      final filename = "autocheck_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}.csv";
+      final filename = "autocheck_${now.year}${_two(now.month)}${_two(now.day)}_${_two(now.hour)}${_two(now.minute)}${_two(now.second)}.csv";
       final file = File("${dir.path}/$filename");
       await file.writeAsString(buffer.toString());
 
-      // Wywołaj okno udostępniania
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(file.path)],
-          subject: "Log przyspieszenia AutoCheck - ${now.toIso8601String()}",
-          text: "Log parametrów silnika zarejestrowany przez AutoCheck (vLinker MC+). Wykrytych anomalii: ${_detectedAnomalies.length}",
+          subject: "Log AutoCheck - ${now.toIso8601String()}",
+          text: "Log parametrów silnika zarejestrowany przez AutoCheck. "
+              "${_activeSession?.vehicleLabel ?? ''} Wykrytych anomalii: ${_detectedAnomalies.length}",
         ),
       );
 
       return file.path;
     } catch (e) {
-      if (kDebugMode) print("Błąd eksportu CSV: $e");
+      if (kDebugMode) debugPrint("Błąd eksportu CSV: $e");
       return null;
     }
+  }
+
+  @override
+  void dispose() {
+    obdService.removeListener(_onObdChanged);
+    super.dispose();
   }
 }

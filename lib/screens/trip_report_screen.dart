@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../models/trip_report.dart';
-import '../models/anomaly.dart';
 
 class TripReportScreen extends StatelessWidget {
   final TripReport report;

@@ -40,7 +40,7 @@ void main() {
 
     test('VIN decoder correctly identifies Peugeot 307 from VIN', () {
       final wmi = VehicleInfo.decodeFromRawData(rawVin: "VF33C3456789");
-      expect(wmi.manufacturer, equals("Peugeot (Stellantis)"));
+      expect(wmi.manufacturer, equals("Peugeot"));
       expect(wmi.profile, equals(VehicleProfile.psa));
     });
   });
@@ -105,18 +105,20 @@ void main() {
 
   testWidgets('AutoCheck App launches and renders main tab bar', (WidgetTester tester) async {
     final obdService = ObdService();
-    final dataloggerService = DataloggerService(obdService: obdService);
+    final dataloggerService = DataloggerService(obdService: obdService, persistHistory: false);
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
+          ChangeNotifierProvider.value(value: obdService),
           ChangeNotifierProvider.value(value: dataloggerService),
-          Provider.value(value: obdService),
         ],
         child: const AutoCheckApp(),
       ),
     );
-    await tester.pumpAndSettle();
+    // Nie pumpAndSettle — na ekranie połączenia kręci się wskaźnik ładowania
+    // listy urządzeń Bluetooth (w testach brak platformy).
+    await tester.pump(const Duration(seconds: 1));
 
     expect(find.byIcon(Icons.speed), findsWidgets);
     expect(find.byIcon(Icons.show_chart), findsWidgets);

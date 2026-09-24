@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Wi-Fi adapters (ELM327 Wi-Fi / vLinker Wi-Fi) communicate over TCP -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Permissions for Bluetooth & vLinker MC+ connectivity -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />

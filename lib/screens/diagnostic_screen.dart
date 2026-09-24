@@ -30,8 +30,32 @@ class DiagnosticScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Podsumowanie stanu silnika
-            _buildHealthBanner(anomalies),
+            // Podsumowanie stanu silnika (tylko gdy jest co analizować)
+            if (session == null || session.points.isEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppTheme.surface,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppTheme.border),
+                ),
+                child: const Text(
+                  "Brak logu do analizy. Nagraj jazdę w zakładce „Rejestrator” albo wybierz log z „Historii”.",
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+                ),
+              )
+            else ...[
+              if (session.isDemo)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 10),
+                  child: Text(
+                    "Analiza przykładowego logu DEMO z symulatora — nie dotyczy Twojego samochodu.",
+                    style: TextStyle(color: AppTheme.cyan, fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              _buildHealthBanner(anomalies),
+            ],
 
             const SizedBox(height: 16),
 

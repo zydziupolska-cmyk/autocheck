@@ -123,7 +123,9 @@ class SensorSelectScreen extends StatelessWidget {
                       ),
                     ),
                     subtitle: Text(
-                      "Kod: ${pid.code} | Jednostka: ${pid.unit} | Zakres: ${pid.minExpected.toInt()}..${pid.maxExpected.toInt()}",
+                      pid.simulatorOnly
+                          ? "Tylko w symulatorze (brak standardowego PID-u OBD-II) | Jednostka: ${pid.unit}"
+                          : "Kod: ${pid.code} | Jednostka: ${pid.unit} | Zakres: ${pid.minExpected.toInt()}..${pid.maxExpected.toInt()}",
                       style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
                     ),
                     trailing: Switch(

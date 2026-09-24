@@ -19,6 +19,10 @@ class ObdPid {
   final double maxExpected;
   final double Function(List<int> bytes) decoder;
 
+  /// Parametr dostępny tylko w symulatorze (brak standardowego PID-u OBD-II).
+  /// Takie czujniki nigdy nie są wysyłane do prawdziwego sterownika.
+  final bool simulatorOnly;
+
   const ObdPid({
     required this.code,
     required this.shortName,
@@ -29,7 +33,14 @@ class ObdPid {
     required this.minExpected,
     required this.maxExpected,
     required this.decoder,
+    this.simulatorOnly = false,
   });
+
+  /// Numer PID dla zapytań Mode 01 (np. 0x0C dla "010C"), null dla innych.
+  int? get mode01Pid {
+    if (simulatorOnly || code.length != 4 || !code.startsWith("01")) return null;
+    return int.tryParse(code.substring(2), radix: 16);
+  }
 
   /// Standardowy katalog czujników OBD-II (Mode 01)
   static final List<ObdPid> standardPids = [
@@ -88,6 +99,37 @@ class ObdPid {
       minExpected: 0,
       maxExpected: 100,
       decoder: (b) => b.isNotEmpty ? (b[0] * 100.0 / 255.0) : 0.0,
+    ),
+    // Pedał gazu — w dieslach TPS (010x11) to klapa dławiąca, która jest prawie
+    // zawsze otwarta, więc do wykrywania „gazu w podłodze” potrzebny jest pedał.
+    // Dwa warianty o tej samej nazwie: preferowany względny 015A, a jeśli ECU go
+    // nie obsługuje — bezwzględny 0149 przeskalowany do 0-100%.
+    ObdPid(
+      code: "015A",
+      shortName: "PEDAL",
+      name: "Pedał gazu (względny)",
+      unit: "%",
+      category: PidCategory.engine,
+      colorValue: 0xFFB5179E, // Magenta
+      minExpected: 0,
+      maxExpected: 100,
+      decoder: (b) => b.isNotEmpty ? (b[0] * 100.0 / 255.0) : 0.0,
+    ),
+    ObdPid(
+      code: "0149",
+      shortName: "PEDAL",
+      name: "Pedał gazu (czujnik D)",
+      unit: "%",
+      category: PidCategory.engine,
+      colorValue: 0xFFB5179E,
+      minExpected: 0,
+      maxExpected: 100,
+      // Czujnik D pokazuje ok. 14-16% w spoczynku i ok. 78-82% przy wciśniętym pedale
+      decoder: (b) {
+        if (b.isEmpty) return double.nan;
+        final raw = b[0] * 100.0 / 255.0;
+        return ((raw - 15.0) / (80.0 - 15.0) * 100.0).clamp(0.0, 100.0);
+      },
     ),
     ObdPid(
       code: "0134",
@@ -193,11 +235,16 @@ class ObdPid {
       colorValue: 0xFFD00000, // Crimson Red
       minExpected: 0,
       maxExpected: 80,
-      // Standardowy PID 7A: ciśnienie różnicowe spalin na filtrze cząstek stałych
-      decoder: (b) => b.length >= 2 ? (((b[0] * 256.0) + b[1]) / 100.0) : 0.0,
+      // PID 7A: bajt A = maska obsługi, B-C = różnica ciśnień (ze znakiem) / 100 kPa
+      decoder: (b) {
+        if (b.length < 3) return double.nan;
+        var raw = (b[1] << 8) | b[2];
+        if (raw >= 0x8000) raw -= 0x10000;
+        return raw / 100.0;
+      },
     ),
     ObdPid(
-      code: "017B",
+      code: "SIM_SOOT",
       shortName: "DPF_SOOT",
       name: "Zapełnienie sadzą DPF",
       unit: "%",
@@ -206,6 +253,8 @@ class ObdPid {
       minExpected: 0,
       maxExpected: 120,
       decoder: (b) => b.isNotEmpty ? (b[0] * 100.0 / 255.0) : 0.0,
+      // Zapełnienie DPF sadzą nie ma standardowego PID-u OBD-II (tylko Mode 22 producenta)
+      simulatorOnly: true,
     ),
     ObdPid(
       code: "0178",
@@ -216,7 +265,18 @@ class ObdPid {
       colorValue: 0xFFFF5400, // Bright Orange
       minExpected: 100,
       maxExpected: 950,
-      decoder: (b) => b.length >= 2 ? (((b[0] * 256.0) + b[1]) / 10.0 - 40.0) : 0.0,
+      // PID 78: bajt A = maska czujników 1-4, potem 4 x 2 bajty (wartość/10 - 40).
+      // Bierzemy pierwszy obsługiwany czujnik.
+      decoder: (b) {
+        if (b.length < 3) return double.nan;
+        final mask = b[0];
+        for (int s = 0; s < 4; s++) {
+          if (mask & (1 << s) != 0 && b.length >= 3 + s * 2) {
+            return ((b[1 + s * 2] << 8) | b[2 + s * 2]) / 10.0 - 40.0;
+          }
+        }
+        return ((b[1] << 8) | b[2]) / 10.0 - 40.0;
+      },
     ),
     ObdPid(
       code: "012E",
@@ -263,7 +323,7 @@ class ObdPid {
       decoder: (b) => b.isNotEmpty ? (b[0] / 200.0) : 0.0,
     ),
     ObdPid(
-      code: "0100_MIS1",
+      code: "SIM_MIS1",
       shortName: "MIS_1",
       name: "Wypadanie Zapłonu Cyl 1",
       unit: "cnt",
@@ -272,9 +332,11 @@ class ObdPid {
       minExpected: 0,
       maxExpected: 0,
       decoder: (b) => b.isNotEmpty ? b[0].toDouble() : 0.0,
+      // Liczniki wypadania zapłonów nie są dostępne w Mode 01 (tylko Mode 06 / Mode 22)
+      simulatorOnly: true,
     ),
     ObdPid(
-      code: "0100_MIS2",
+      code: "SIM_MIS2",
       shortName: "MIS_2",
       name: "Wypadanie Zapłonu Cyl 2",
       unit: "cnt",
@@ -283,9 +345,11 @@ class ObdPid {
       minExpected: 0,
       maxExpected: 0,
       decoder: (b) => b.isNotEmpty ? b[0].toDouble() : 0.0,
+      // Liczniki wypadania zapłonów nie są dostępne w Mode 01 (tylko Mode 06 / Mode 22)
+      simulatorOnly: true,
     ),
     ObdPid(
-      code: "0100_MIS3",
+      code: "SIM_MIS3",
       shortName: "MIS_3",
       name: "Wypadanie Zapłonu Cyl 3",
       unit: "cnt",
@@ -294,9 +358,11 @@ class ObdPid {
       minExpected: 0,
       maxExpected: 0,
       decoder: (b) => b.isNotEmpty ? b[0].toDouble() : 0.0,
+      // Liczniki wypadania zapłonów nie są dostępne w Mode 01 (tylko Mode 06 / Mode 22)
+      simulatorOnly: true,
     ),
     ObdPid(
-      code: "0100_MIS4",
+      code: "SIM_MIS4",
       shortName: "MIS_4",
       name: "Wypadanie Zapłonu Cyl 4",
       unit: "cnt",
@@ -305,6 +371,8 @@ class ObdPid {
       minExpected: 0,
       maxExpected: 0,
       decoder: (b) => b.isNotEmpty ? b[0].toDouble() : 0.0,
+      // Liczniki wypadania zapłonów nie są dostępne w Mode 01 (tylko Mode 06 / Mode 22)
+      simulatorOnly: true,
     ),
   ];
 
@@ -346,19 +414,19 @@ class LoggingPreset {
       id: "wot_pull",
       title: "Pomiar WOT / Przyspieszenie (Hamownia)",
       description: "Maksymalny FPS do analizy przyspieszenia: Obroty, Doładowanie, Przepływomierz, Kąt zapłonu, Przepustnica, AFR.",
-      pidShortNames: ["RPM", "BOOST", "MAF", "IGN", "TPS", "AFR"],
+      pidShortNames: ["RPM", "BOOST", "MAF", "IGN", "TPS", "PEDAL", "AFR"],
     ),
     const LoggingPreset(
       id: "turbo_diag",
       title: "Diagnostyka Układu Turbo & Dolotu",
       description: "Ciśnienie doładowania, obroty, przepływ powietrza i temperatura w dolocie (wykrywanie nieszczelności i overboostu).",
-      pidShortNames: ["RPM", "BOOST", "MAF", "IAT", "TPS"],
+      pidShortNames: ["RPM", "BOOST", "MAF", "IAT", "TPS", "PEDAL"],
     ),
     const LoggingPreset(
       id: "dpf_turbo_correlate",
       title: "Turbosprężarka vs DPF/GPF (Spaliny)",
       description: "Analiza zależności braku mocy: Ciśnienie doładowania, różnica ciśnień DPF, masa sadzy i temperatura spalin EGT.",
-      pidShortNames: ["RPM", "BOOST", "MAF", "DPF_DP", "DPF_SOOT", "EGT", "TPS"],
+      pidShortNames: ["RPM", "BOOST", "MAF", "DPF_DP", "DPF_SOOT", "EGT", "TPS", "PEDAL", "EGR_CMD"],
     ),
     const LoggingPreset(
       id: "idle_evap_vvt",
@@ -376,7 +444,7 @@ class LoggingPreset {
       id: "all_sensors",
       title: "Wszystkie Obsługiwane Sensory",
       description: "Pełny log ze wszystkich czujników dostępnych w samochodzie.",
-      pidShortNames: ["RPM", "BOOST", "MAF", "IGN", "TPS", "AFR", "O2_V", "STFT", "LTFT", "IAT", "ECT", "LOAD", "SPEED", "F_RAIL", "DPF_DP", "DPF_SOOT", "EGT", "EVAP_VP", "EGR_CMD", "EGR_ERR", "MIS_1", "MIS_2", "MIS_3", "MIS_4"],
+      pidShortNames: ["RPM", "BOOST", "MAF", "IGN", "TPS", "PEDAL", "AFR", "O2_V", "STFT", "LTFT", "IAT", "ECT", "LOAD", "SPEED", "F_RAIL", "DPF_DP", "DPF_SOOT", "EGT", "EVAP_VP", "EGR_CMD", "EGR_ERR", "MIS_1", "MIS_2", "MIS_3", "MIS_4"],
     ),
   ];
 }

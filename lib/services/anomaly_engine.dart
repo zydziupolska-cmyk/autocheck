@@ -5,13 +5,17 @@ import '../models/trip_report.dart';
 
 class AnomalyEngine {
   /// Analizuje zebraną sesję logowania i zwraca listę wykrytych nieprawidłowości
-  static List<Anomaly> analyzeSession(List<LogPoint> points) {
+  ///
+  /// [isDiesel] wyłącza reguły, które mają sens tylko w silnikach benzynowych
+  /// (skład mieszanki AFR/lambda, sonda wąskopasmowa, kąt zapłonu, podciśnienie
+  /// w kolektorze na biegu jałowym — diesel nie ma przepustnicy dławiącej).
+  static List<Anomaly> analyzeSession(List<LogPoint> points, {bool isDiesel = false}) {
     if (points.length < 5) return [];
 
     final List<Anomaly> anomalies = [];
 
     // 1. Wykryj próby przyspieszenia (WOT - Wide Open Throttle)
-    final wotWindows = _detectWotWindows(points);
+    final wotWindows = _detectWotWindows(points, isDiesel: isDiesel);
 
     // Jeśli nie wykryto idealnego WOT, analizujemy całą sesję jeśli jest dynamiczna
     final windowsToAnalyze = wotWindows.isNotEmpty
@@ -22,7 +26,7 @@ class AnomalyEngine {
       if (window.length < 5) continue;
 
       // 1. Analiza cofania zapłonu (Knock / Timing Retard)
-      _checkTimingRetard(window, anomalies);
+      if (!isDiesel) _checkTimingRetard(window, anomalies);
 
       // 2. Analiza spadków ciśnienia doładowania (Boost Leaks)
       _checkBoostLeaks(window, anomalies);
@@ -31,7 +35,7 @@ class AnomalyEngine {
       _checkUnderboostAndDpfCorrelation(window, anomalies);
 
       // 4. Analiza składu mieszanki (Lean AFR under load)
-      _checkLeanAfr(window, anomalies);
+      if (!isDiesel) _checkLeanAfr(window, anomalies);
 
       // 5. Analiza przepływomierza powietrza (MAF drop)
       _checkMafDegradation(window, anomalies);
@@ -50,10 +54,10 @@ class AnomalyEngine {
     }
 
     // 10. Badanie Leniwej Sondy Lambda (Wąskopasmowa) - na pełnej sesji
-    _checkNarrowbandO2Health(points, anomalies);
+    if (!isDiesel) _checkNarrowbandO2Health(points, anomalies);
 
     // 11. Badanie Odcięcia Paliwa AFR (Szerokopasmowa) - na pełnej sesji
-    _checkWidebandAfrResponse(points, anomalies);
+    if (!isDiesel) _checkWidebandAfrResponse(points, anomalies);
 
     // 12. Krzyżowa Analiza Wypadania Zapłonów (Misfire Profiler) - na pełnej sesji
     _checkMisfireRootCause(points, anomalies);
@@ -65,18 +69,27 @@ class AnomalyEngine {
     _checkIdleHunting(points, anomalies);
 
     // 9. Analiza zacięcia zmiennych faz rozrządu VVT / utraty podciśnienia w kolektorze (P0011)
-    _checkVvtJamming(points, anomalies);
+    if (!isDiesel) _checkVvtJamming(points, anomalies);
 
     return anomalies;
   }
 
   /// Wykrywa okna czasowe, w których kierowca wcisnął gaz do dechy (WOT)
-  static List<List<LogPoint>> _detectWotWindows(List<LogPoint> points) {
+  static List<List<LogPoint>> _detectWotWindows(List<LogPoint> points, {bool isDiesel = false}) {
     final List<List<LogPoint>> windows = [];
     List<LogPoint> currentWindow = [];
 
     for (final p in points) {
-      final isWot = p.tps >= 80.0 || (p.tps == 0 && p.load >= 75.0);
+      // Pedał gazu jest najlepszym źródłem; TPS tylko w benzynie (w dieslu to
+      // klapa dławiąca); bez obu — obciążenie silnika.
+      final bool isWot;
+      if (p.has("PEDAL")) {
+        isWot = p.tps >= 80.0;
+      } else if (p.has("TPS") && !isDiesel) {
+        isWot = p.tps >= 80.0;
+      } else {
+        isWot = p.load >= 75.0;
+      }
       if (isWot) {
         currentWindow.add(p);
       } else {
@@ -703,9 +716,10 @@ class AnomalyEngine {
   static void _checkIatHeatSoak(List<LogPoint> points, List<Anomaly> anomalies) {
     if (!points.any((p) => p.values.containsKey("IAT"))) return;
 
-    final iatStart = points.first.iat;
-    final iatEnd = points.last.iat;
-    final iatMax = points.map((p) => p.iat).reduce(max);
+    final iatPoints = points.where((p) => p.has("IAT")).toList();
+    final iatStart = iatPoints.first.iat;
+    final iatEnd = iatPoints.last.iat;
+    final iatMax = iatPoints.map((p) => p.iat).reduce(max);
 
     if (iatMax >= 55.0 || (iatEnd - iatStart) >= 18.0) {
       anomalies.add(Anomaly(
@@ -796,7 +810,8 @@ class AnomalyEngine {
     if (!points.any((p) => p.values.containsKey("F_RAIL"))) return;
 
     // Sprawdzenie na niskich obrotach / biegu jałowym (obroty < 2200 RPM lub TPS < 25%)
-    final lowRpmPoints = points.where((p) => p.rpm <= 2200 || p.tps <= 25).toList();
+    // Pomijamy punkty z wyłączonym silnikiem / rozruchem (RPM < 500), gdzie niskie ciśnienie jest normalne
+    final lowRpmPoints = points.where((p) => p.rpm >= 500 && (p.rpm <= 2200 || p.tps <= 25) && p.has("F_RAIL")).toList();
     if (lowRpmPoints.isNotEmpty) {
       final minPressure = lowRpmPoints.map((p) => p.values["F_RAIL"]!).reduce(min);
       if (minPressure < 28.0) {
@@ -846,13 +861,48 @@ class AnomalyEngine {
 
   /// Sprawdza falowanie obrotów i drgania na biegu jałowym (np. Peugeot 2.0 16V EW10)
   static void _checkIdleHunting(List<LogPoint> points, List<Anomaly> anomalies) {
-    final idlePoints = points.where((p) => p.tps <= 10 && p.rpm < 1400).toList();
-    if (idlePoints.length < 15) return;
+    // Bieg jałowy: silnik pracuje (RPM > 400), gaz puszczony, auto stoi (jeśli znamy prędkość).
+    // Bez warunku prędkości hamowanie silnikiem na biegu wyglądałoby jak „falowanie”.
+    bool isIdle(LogPoint p) =>
+        p.tps <= 10 && p.rpm > 400 && p.rpm < 1400 && (!p.has("SPEED") || p.speed <= 3);
 
-    final rpms = idlePoints.map((p) => p.rpm).toList();
-    final minRpm = rpms.reduce(min);
-    final maxRpm = rpms.reduce(max);
-    final rpmDelta = maxRpm - minRpm;
+    // Szukamy najgorszego falowania w krótkim oknie (4 s) ciągłego biegu jałowego,
+    // żeby naturalny spadek obrotów po rozgrzaniu silnika nie był brany za usterkę.
+    List<LogPoint> idlePoints = [];
+    double rpmDelta = 0;
+    double minRpm = 0;
+    double maxRpm = 0;
+    List<LogPoint> segment = [];
+    void evaluateSegment() {
+      if (segment.length < 15) return;
+      int start = 0;
+      for (int end = 0; end < segment.length; end++) {
+        while (segment[end].timeMs - segment[start].timeMs > 4000) {
+          start++;
+        }
+        final window = segment.sublist(start, end + 1);
+        if (window.length < 10) continue;
+        final lo = window.map((p) => p.rpm).reduce(min);
+        final hi = window.map((p) => p.rpm).reduce(max);
+        if (hi - lo > rpmDelta) {
+          rpmDelta = hi - lo;
+          minRpm = lo;
+          maxRpm = hi;
+          idlePoints = segment;
+        }
+      }
+    }
+
+    for (final p in points) {
+      if (isIdle(p) && (segment.isEmpty || p.timeMs - segment.last.timeMs <= 1500)) {
+        segment.add(p);
+      } else {
+        evaluateSegment();
+        segment = isIdle(p) ? [p] : [];
+      }
+    }
+    evaluateSegment();
+    if (idlePoints.length < 15) return;
 
     // Jeśli obroty na jałowym skaczą o więcej niż 220 RPM
     if (rpmDelta >= 220) {
@@ -932,7 +982,9 @@ class AnomalyEngine {
     if (!points.any((p) => p.values.containsKey("BOOST"))) return;
 
     // Szukamy punktów na biegu jałowym (zamknięta przepustnica, obroty < 1300 RPM)
-    final idlePoints = points.where((p) => p.tps <= 8 && p.rpm >= 550 && p.rpm <= 1300).toList();
+    final idlePoints = points
+        .where((p) => p.tps <= 8 && p.rpm >= 550 && p.rpm <= 1300 && (!p.has("SPEED") || p.speed <= 3))
+        .toList();
     if (idlePoints.length < 10) return;
 
     // Normalne podciśnienie na jałowym w sprawnym silniku to -0.60 do -0.75 bar (MAP 25-40 kPa).
@@ -1056,7 +1108,7 @@ class AnomalyEngine {
   }
 
   /// Tryb Długodystansowy - Analizuje CAŁĄ trasę i generuje zwięzły raport
-  static TripReport generateTripReport(List<LogPoint> points) {
+  static TripReport generateTripReport(List<LogPoint> points, {bool isDiesel = false}) {
     if (points.isEmpty) {
       return const TripReport(
         duration: Duration.zero, distanceKm: 0, totalPoints: 0,
@@ -1089,7 +1141,7 @@ class AnomalyEngine {
 
     avgSpeed = points.isNotEmpty && points.any((p) => p.values.containsKey("SPEED")) 
         ? (avgSpeed / points.where((p) => p.values.containsKey("SPEED")).length) 
-        : 40.0; // Domyślnie 40km/h jeśli brak prędkości
+        : 0.0; // Bez prędkości nie szacujemy dystansu
         
     final avgLtft = countLtft > 0 ? sumLtft / countLtft : 0.0;
     final durationMs = points.last.timeMs - points.first.timeMs;
@@ -1097,7 +1149,7 @@ class AnomalyEngine {
     final distanceKm = avgSpeed * durationHours;
 
     // 1. Zdobądź zwykłe anomalie z całej trasy
-    final List<Anomaly> rawAnomalies = analyzeSession(points);
+    final List<Anomaly> rawAnomalies = analyzeSession(points, isDiesel: isDiesel);
 
     // 2. Dodaj anomalie długodystansowe (Termostat, Ujemne/Dodatnie LTFT)
     // Termostat: ECT powinno być > 85C jeśli trasa trwa > 10 minut

@@ -102,6 +102,13 @@ class LogsHistoryScreen extends StatelessWidget {
                             "Czas: ${session.durationSec.toStringAsFixed(1)}s | Max Boost: ${session.peakBoost.toStringAsFixed(2)} bar | Max RPM: ${session.peakRpm.toInt()}",
                             style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
                           ),
+                          if (session.vehicleLabel != null) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              "${session.vehicleLabel}${session.isDiesel ? ' • Diesel' : ''}",
+                              style: const TextStyle(color: AppTheme.textMuted, fontSize: 10),
+                            ),
+                          ],
                         ],
                       ),
                       trailing: Row(
@@ -113,6 +120,28 @@ class LogsHistoryScreen extends StatelessWidget {
                             onPressed: () {
                               logger.selectSession(session);
                               onNavigateToTab?.call(3); // Idź do wykresu
+                            },
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline, color: AppTheme.textMuted),
+                            tooltip: "Usuń log",
+                            onPressed: () async {
+                              final ok = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  backgroundColor: AppTheme.surface,
+                                  title: const Text("Usunąć log?", style: TextStyle(color: AppTheme.textPrimary)),
+                                  content: Text(session.title, style: const TextStyle(color: AppTheme.textSecondary)),
+                                  actions: [
+                                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Anuluj")),
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx, true),
+                                      child: const Text("Usuń", style: TextStyle(color: AppTheme.red)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (ok == true) await logger.deleteSession(session);
                             },
                           ),
                         ],

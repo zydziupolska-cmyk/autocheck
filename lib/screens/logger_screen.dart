@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../models/log_point.dart';
+import '../models/obd_pid.dart';
 import '../services/datalogger_service.dart';
+import '../services/obd_service.dart';
 import '../theme/app_theme.dart';
 import 'trip_report_screen.dart';
 
@@ -12,19 +13,18 @@ class LoggerScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final logger = Provider.of<DataloggerService>(context);
-    final lastPoint = logger.currentPoints.isNotEmpty
-        ? logger.currentPoints.last
-        : const LogPoint(timeMs: 0, values: {
-            "RPM": 850,
-            "BOOST": -0.65,
-            "MAF": 4.5,
-            "IGN": 7.0,
-            "TPS": 0,
-            "AFR": 14.7,
-            "IAT": 24,
-            "ECT": 90,
-          });
+    final logger = context.watch<DataloggerService>();
+    final obd = context.watch<ObdService>();
+
+    // Ostatnia znana wartość każdego czujnika (pojedyncze nieudane odczyty nie zerują zegarów)
+    final latest = <String, double>{};
+    final pts = logger.currentPoints;
+    for (int i = pts.length - 1; i >= 0 && i >= pts.length - 30; i--) {
+      pts[i].values.forEach((k, v) => latest.putIfAbsent(k, () => v));
+    }
+    final gaugeKeys = logger.isRecording || pts.isEmpty
+        ? logger.selectedPidKeys.toList()
+        : (logger.activeSession?.activePidKeys ?? logger.selectedPidKeys.toList());
 
     return Scaffold(
       appBar: AppBar(
@@ -48,6 +48,9 @@ class LoggerScreen extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
+            // Tryb pracy / ostrzeżenia
+            _buildSourceBanner(obd, logger),
+
             // Pasek statusu pomiaru (czas, Hz, próbki)
             _buildMetricsBar(logger),
 
@@ -59,7 +62,7 @@ class LoggerScreen extends StatelessWidget {
             const SizedBox(height: 20),
 
             // Zegary telemetryczne na żywo
-            _buildLiveGaugesGrid(lastPoint),
+            _buildLiveGaugesGrid(latest, gaugeKeys),
 
             const SizedBox(height: 16),
 
@@ -177,7 +180,7 @@ class LoggerScreen extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  isRec ? "Dotknij, aby zatrzymać i natychmiast przeanalizować" : "Wbij 3. bieg, wciśnij START i gaz do dechy!",
+                  isRec ? "Dotknij, aby zatrzymać i natychmiast przeanalizować" : "Wciśnij START, potem jedź — log zapisze się w Historii",
                   style: const TextStyle(
                     color: Colors.black87,
                     fontSize: 12,
@@ -192,7 +195,73 @@ class LoggerScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildLiveGaugesGrid(LogPoint p) {
+  Widget _buildSourceBanner(ObdService obd, DataloggerService logger) {
+    String text;
+    Color color;
+    IconData icon;
+    if (logger.recordingWarning != null) {
+      text = logger.recordingWarning!;
+      color = AppTheme.red;
+      icon = Icons.warning_amber_rounded;
+    } else if (obd.status == ObdConnectionStatus.connected) {
+      final v = obd.vehicleInfo;
+      text = "Na żywo z auta: ${v != null ? '${v.manufacturer} ${v.modelName}' : 'pojazd'}"
+          "${v?.isDiesel == true ? ' (Diesel)' : ''}";
+      color = AppTheme.green;
+      icon = Icons.sensors;
+    } else if (obd.status == ObdConnectionStatus.simulated) {
+      text = "Tryb SYMULATORA — dane nie pochodzą z samochodu";
+      color = AppTheme.cyan;
+      icon = Icons.sports_motorsports;
+    } else if (logger.activeSession?.isDemo == true) {
+      text = "Wyświetlany jest przykładowy log DEMO (nie z Twojego auta)";
+      color = AppTheme.cyan;
+      icon = Icons.info_outline;
+    } else {
+      text = "Brak połączenia — połącz się z adapterem w zakładce „Połączenie”";
+      color = AppTheme.textMuted;
+      icon = Icons.link_off;
+    }
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withAlpha(25),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withAlpha(90)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 8),
+          Expanded(child: Text(text, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600))),
+        ],
+      ),
+    );
+  }
+
+  static IconData _iconFor(ObdPid? pid) {
+    switch (pid?.category) {
+      case PidCategory.turbo:
+        return Icons.compress;
+      case PidCategory.fuel:
+        return Icons.local_gas_station;
+      case PidCategory.ignition:
+        return Icons.flash_on;
+      case PidCategory.temperature:
+        return Icons.thermostat;
+      case PidCategory.exhaust:
+        return Icons.cloud;
+      default:
+        return Icons.speed;
+    }
+  }
+
+  Widget _buildLiveGaugesGrid(Map<String, double> latest, List<String> keys) {
+    final rpm = latest["RPM"];
+    final tiles = keys.where((k) => k != "RPM").toList();
+
     return Column(
       children: [
         // Główny pasek obrotomierza (RPM Gauge)
@@ -218,9 +287,9 @@ class LoggerScreen extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    "${p.rpm.toInt()} obr/min",
+                    rpm != null ? "${rpm.toInt()} obr/min" : "— obr/min",
                     style: TextStyle(
-                      color: p.rpm > 6200 ? AppTheme.red : AppTheme.cyan,
+                      color: (rpm ?? 0) > 6200 ? AppTheme.red : AppTheme.cyan,
                       fontSize: 24,
                       fontWeight: FontWeight.w900,
                       fontFamily: "monospace",
@@ -232,12 +301,12 @@ class LoggerScreen extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: LinearProgressIndicator(
-                  value: (p.rpm / 7500.0).clamp(0.0, 1.0),
+                  value: ((rpm ?? 0) / 7500.0).clamp(0.0, 1.0),
                   minHeight: 18,
                   backgroundColor: AppTheme.surfaceLight,
-                  color: p.rpm > 6200
+                  color: (rpm ?? 0) > 6200
                       ? AppTheme.red
-                      : (p.rpm > 5000 ? AppTheme.yellow : AppTheme.cyan),
+                      : ((rpm ?? 0) > 5000 ? AppTheme.yellow : AppTheme.cyan),
                 ),
               ),
             ],
@@ -246,83 +315,42 @@ class LoggerScreen extends StatelessWidget {
 
         const SizedBox(height: 12),
 
-        // Kafelki 2x2 z kluczowymi zegarami
-        Row(
+        GridView.count(
+          crossAxisCount: 2,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisSpacing: 12,
+          mainAxisSpacing: 12,
+          childAspectRatio: 1.75,
           children: [
-            Expanded(
-              child: _gaugeCard(
-                title: "DOŁADOWANIE",
-                value: "${p.boost.toStringAsFixed(2)} bar",
-                color: AppTheme.cyan,
-                icon: Icons.compress,
-                subtext: p.boost > 0 ? "Nadciśnienie" : "Podciśnienie",
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _gaugeCard(
-                title: "SKŁAD MIESZANKI",
-                value: "${p.afr.toStringAsFixed(1)}:1",
-                color: p.afr > 13.2 && p.boost > 0.3 ? AppTheme.red : AppTheme.orange,
-                icon: Icons.local_fire_department,
-                subtext: p.afr < 12.5 ? "Bogato (Bezpiecznie)" : (p.afr > 13.0 ? "UBOGO!" : "Stechiometrycznie"),
-              ),
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 12),
-
-        Row(
-          children: [
-            Expanded(
-              child: _gaugeCard(
-                title: "ZAPŁON (IGN)",
-                value: "${p.ign.toStringAsFixed(1)}°",
-                color: p.ign < 5.0 && p.rpm > 3500 ? AppTheme.red : AppTheme.yellow,
-                icon: Icons.flash_on,
-                subtext: p.ign < 5.0 ? "Podejrzenie retardu" : "Wyprzedzenie",
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _gaugeCard(
-                title: "PRZEPUSTNICA (TPS)",
-                value: "${p.tps.toInt()}%",
-                color: p.tps > 85 ? AppTheme.green : AppTheme.textSecondary,
-                icon: Icons.airline_seat_recline_extra,
-                subtext: p.tps > 85 ? "WOT (Pełny gaz)" : "Częściowy gaz",
-              ),
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 12),
-
-        Row(
-          children: [
-            Expanded(
-              child: _gaugeCard(
-                title: "PRZEPŁYW (MAF)",
-                value: "${p.maf.toStringAsFixed(0)} g/s",
-                color: AppTheme.blue,
-                icon: Icons.air,
-                subtext: "Masa powietrza",
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _gaugeCard(
-                title: "TEMP. DOLOTU (IAT)",
-                value: "${p.iat.toStringAsFixed(0)}°C",
-                color: p.iat > 55 ? AppTheme.red : AppTheme.cyan,
-                icon: Icons.thermostat,
-                subtext: "Chłodzenie dolotu",
-              ),
-            ),
+            for (final key in tiles) _gaugeFor(key, latest[key]),
           ],
         ),
       ],
+    );
+  }
+
+  Widget _gaugeFor(String key, double? value) {
+    final pid = ObdPid.getByShortName(key);
+    final color = pid != null ? Color(pid.colorValue) : AppTheme.cyan;
+    final unit = pid?.unit ?? "";
+    final decimals = (key == "BOOST" || key == "O2_V") ? 2 : (unit == "%" || unit == "°C" || unit == "km/h" || unit == "obr/min" ? 0 : 1);
+    final valueText = value == null ? "—" : "${value.toStringAsFixed(decimals)} $unit";
+
+    String subtext = pid?.name ?? key;
+    if (value != null) {
+      if (key == "BOOST") subtext = value > 0.05 ? "Nadciśnienie (doładowanie)" : "Podciśnienie";
+      if (key == "PEDAL" || key == "TPS") subtext = value > 85 ? "Pełny gaz (WOT)" : (pid?.name ?? key);
+    } else {
+      subtext = "brak odczytu";
+    }
+
+    return _gaugeCard(
+      title: (pid?.name ?? key).toUpperCase(),
+      value: valueText,
+      color: color,
+      icon: _iconFor(pid),
+      subtext: subtext,
     );
   }
 
@@ -346,12 +374,16 @@ class LoggerScreen extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  color: AppTheme.textMuted,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
+              Expanded(
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppTheme.textMuted,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
               Icon(icon, color: color, size: 16),
@@ -360,6 +392,8 @@ class LoggerScreen extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               color: color,
               fontSize: 20,
@@ -370,6 +404,8 @@ class LoggerScreen extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             subtext,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10),
           ),
         ],
