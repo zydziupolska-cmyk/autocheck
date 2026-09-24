@@ -33,7 +33,7 @@ class AnomalyEngine {
       if (!isDiesel) _checkTimingRetard(window, anomalies);
 
       // 2. Analiza spadków ciśnienia doładowania (Boost Leaks)
-      _checkBoostLeaks(window, anomalies);
+      _checkBoostLeaks(window, anomalies, isDiesel: isDiesel);
 
       // 4. Analiza składu mieszanki (Lean AFR under load)
       if (!isDiesel) _checkLeanAfr(window, anomalies);
@@ -79,6 +79,11 @@ class AnomalyEngine {
       anomalies.removeWhere((a) =>
           (a.id.startsWith("misfire_spark_") || a.id.startsWith("misfire_rich_")) &&
           (cyl == null || a.id.startsWith("misfire_spark_${cyl}_") || a.id.startsWith("misfire_rich_${cyl}_")));
+    }
+    // Reguła „nagły spadek doładowania” patrzy tylko na samo ciśnienie; gdy diagnoza
+    // różnicowa objęła ten sam odcinek (z przepływem, DPF, VGT), jej wniosek jest pełniejszy
+    for (final d in drive.where((a) => a.paramKey == "BOOST")) {
+      anomalies.removeWhere((a) => a.id.startsWith("boost_") && a.startMs <= d.endMs && a.endMs >= d.startMs);
     }
     anomalies.addAll(drive);
 
@@ -206,9 +211,13 @@ class AnomalyEngine {
   }
 
   /// Sprawdza nieszczelności doładowania (nagły spadek ciśnienia)
-  static void _checkBoostLeaks(List<LogPoint> points, List<Anomaly> anomalies) {
+  static void _checkBoostLeaks(List<LogPoint> points, List<Anomaly> anomalies, {bool isDiesel = false}) {
     if (!points.any((p) => p.values.containsKey("BOOST"))) return;
 
+    // Nagły spadek = w ciągu ok. 1,5 s przy pełnym gazie ciśnienie spada o ≥ 0,35 bar
+    // bardziej niż wartość zadana. Zwykłe opadanie doładowania na wysokich obrotach
+    // (ECU samo zmniejsza zadane) nie jest nieszczelnością.
+    const window = 1500.0;
     double peakBoost = 0;
     LogPoint? leakStart;
     double lowestBoostAfterPeak = 999;
@@ -216,14 +225,29 @@ class AnomalyEngine {
     for (int i = 0; i < points.length; i++) {
       final p = points[i];
       final boost = p.boost;
+      final wot = DriveState.isFullThrottle(p.values, isDiesel: isDiesel);
 
-      if (boost > peakBoost) {
-        peakBoost = boost;
+      double? drop;
+      double? windowPeak;
+      if (wot && p.values.containsKey("BOOST")) {
+        for (int j = i - 1; j >= 0 && p.timeMs - points[j].timeMs <= window; j--) {
+          final q = points[j];
+          if (!q.values.containsKey("BOOST") || !DriveState.isFullThrottle(q.values, isDiesel: isDiesel)) continue;
+          final targetDrop = (q.values["TARGET_BOOST"] != null && p.values["TARGET_BOOST"] != null)
+              ? max(0.0, q.values["TARGET_BOOST"]! - p.values["TARGET_BOOST"]!)
+              : 0.0;
+          final d = (q.boost - boost) - targetDrop;
+          if (drop == null || d > drop) {
+            drop = d;
+            windowPeak = q.boost;
+          }
+        }
       }
 
-      // Jeśli mieliśmy już doładowanie > 0.8 bar, a nagle spada o > 0.35 bar przy pełnym gazie
-      if (peakBoost >= 0.8 && (peakBoost - boost) >= 0.35 && p.rpm >= 2800 && p.rpm <= 6200) {
+      final collapsing = drop != null && drop >= 0.35 && windowPeak! >= 0.8 && p.rpm >= 2000 && p.rpm <= 6200;
+      if (collapsing) {
         leakStart ??= points[max(0, i - 1)];
+        if (windowPeak > peakBoost) peakBoost = windowPeak;
         if (boost < lowestBoostAfterPeak) lowestBoostAfterPeak = boost;
       } else if (leakStart != null) {
         anomalies.add(Anomaly(
@@ -265,6 +289,8 @@ class AnomalyEngine {
           ],
         ));
         leakStart = null;
+        peakBoost = 0;
+        lowestBoostAfterPeak = 999;
       }
     }
   }

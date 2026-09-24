@@ -74,6 +74,8 @@ class ObdService extends ChangeNotifier {
   String? _stnId; // np. "STN2120 v5.6.19" — adapter obsługuje komendy ST
   String _protocolNumber = "6"; // z ATDPN — do przywrócenia po trybie surowego CAN
   bool _stpxSupported = false;
+  String? _stpxReply; // surowa odpowiedź na test STPX (do informacji o adapterze)
+  double? _mapScale; // skala PID 0B z PID 4F (kPa na bit), gdy ECU podaje zakres MAP > 255 kPa
   final Map<String, String> _adapterInfo = {};
   int _multiPidFailures = 0;
   Set<int> _supportedPids = {};
@@ -338,6 +340,8 @@ class ObdService extends ChangeNotifier {
       _multiPidFailures = 0;
       _stnId = null;
       _stpxSupported = false;
+      _stpxReply = null;
+      _mapScale = null;
       _adapterInfo.clear();
       _supportedPids = {};
       _supportedMode06 = {};
@@ -634,6 +638,7 @@ class ObdService extends ChangeNotifier {
       await _setHeader(_engineHeader!);
       final raw = await _sendCommand("STPX D:0100,R:1");
       _stpxSupported = ElmParser.parse(raw, _bus).any((r) => r.matches(0x41, [0x00]));
+      _stpxReply = raw.replaceAll("\n", " ").trim();
     }
 
     // Kilka PIDów w jednym zapytaniu (SAE J1979 na CAN pozwala do 6) — kilkukrotnie
@@ -649,6 +654,15 @@ class ObdService extends ChangeNotifier {
     if (_supportedPids.contains(0x33)) {
       final baro = await _readMode01Raw(0x33);
       if (baro != null && baro.isNotEmpty && baro[0] > 50) _baroKpa = baro[0].toDouble();
+    }
+    // PID 4F bajt D: maksymalny zakres MAP (×10 kPa). Jeśli ECU go podaje, PID 0B jest
+    // przeskalowany: wartość × D×10/255 kPa (inaczej doładowanie > 1,55 bar byłoby ucięte).
+    if (_supportedPids.contains(0x4F)) {
+      final r = await _readMode01Raw(0x4F);
+      if (r != null && r.length >= 4 && r[3] > 0) {
+        final maxKpa = r[3] * 10.0;
+        if (maxKpa > 255 && maxKpa <= 2550) _mapScale = maxKpa / 255.0;
+      }
     }
 
     _updateStatus(ObdConnectionStatus.initializing, "Odczyt danych pojazdu (VIN, sterownik)...");
@@ -668,10 +682,21 @@ class ObdService extends ChangeNotifier {
     }
 
     _adapterInfo["Sterownik silnika"] = _engineEcu ?? "—";
-    _adapterInfo["Szybkie zapytania STPX"] = _stpxSupported ? "tak" : "nie";
+    _adapterInfo["Szybkie zapytania STPX"] = _stpxSupported
+        ? "tak"
+        : _stpxReply != null
+            ? "nie (odpowiedź: ${_stpxReply!.isEmpty ? 'brak' : _stpxReply})"
+            : "nie";
     _adapterInfo["Kilka PID-ów w zapytaniu"] = _multiPidSupported ? "tak" : "nie";
     _adapterInfo["Liczba odpowiedzi (np. 010C1)"] = _responseCountSupported ? "tak" : "nie";
     _adapterInfo["Obsługiwane PID-y Mode 01"] = "${_supportedPids.length}";
+    // Skąd pochodzą kluczowe kanały — pomaga ocenić, czy zadane i rzeczywiste są porównywalne
+    for (final key in ["BOOST", "TARGET_BOOST", "F_RAIL", "RAIL_TGT", "MAF"]) {
+      final src = _discoveredPids.where((p) => p.shortName == key).firstOrNull;
+      if (src == null) continue;
+      final origin = src is ExtendedPid ? "${src.canHeader ?? ''} ${src.requestCommand} (${src.source})".trim() : "OBD ${src.code}";
+      _adapterInfo["Źródło $key"] = origin + (src.code == "010B" && _mapScale != null ? " ×${_mapScale!.toStringAsFixed(3)} (PID 4F)" : "");
+    }
 
     if (!_hasTransport) return false;
     final ecuTxt = _engineEcu != null ? " | ECU $_engineEcu" : "";
@@ -848,7 +873,8 @@ class ObdService extends ChangeNotifier {
     }
     switch (pid.transform) {
       case ValueTransform.absKpaToRelBar:
-        return (raw - (_baroKpa ?? 101.3)) / 100.0;
+        final kpa = pid.code == "010B" && _mapScale != null ? raw * _mapScale! : raw;
+        return (kpa - (_baroKpa ?? 101.3)) / 100.0;
       case ValueTransform.none:
         return raw;
     }

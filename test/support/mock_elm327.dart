@@ -380,7 +380,14 @@ class MockElm327 {
   // ciśnienie spalin (73), moment żądany/rzeczywisty (61/62)
   static const dieselExtra = {0x61, 0x62, 0x69, 0x6D, 0x70, 0x71, 0x73};
 
-  Set<int> get _supported => petrol ? {...engineSupported, ...petrolExtra} : {...engineSupported, ...dieselExtra};
+  /// PID 4F bajt D (zakres MAP ×10 kPa) — gdy ustawiony, PID 0B jest przeskalowany.
+  int? mapRangeTens;
+
+  Set<int> get _supported => {
+        ...engineSupported,
+        ...(petrol ? petrolExtra : dieselExtra),
+        if (mapRangeTens != null) 0x4F,
+      };
 
   List<int> _u16(double v) {
     final i = v.round().clamp(0, 0xFFFF);
@@ -429,7 +436,11 @@ class MockElm327 {
             final raw = (rpm * 4).round();
             return [0x41, 0x0C, raw >> 8, raw & 0xFF];
           case 0x0B:
+            final range = mapRangeTens;
+            if (range != null) return [0x41, 0x0B, (mapKpa * 255 / (range * 10)).round().clamp(0, 255)];
             return [0x41, 0x0B, mapKpa.round().clamp(0, 255)];
+          case 0x4F:
+            return [0x41, 0x4F, 0, 0, 0, mapRangeTens ?? 0];
           case 0x70:
             return [0x41, 0x70, 0x03, ..._u16(targetKpa * 32), ..._u16(mapKpa * 32), 0, 0, 0, 0, 0];
           case 0x6D:

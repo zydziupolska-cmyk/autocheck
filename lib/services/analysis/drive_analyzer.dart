@@ -458,7 +458,7 @@ class DriveAnalyzer {
       plainSummary: plain,
       falseLeadWarning: top.id == "turbo"
           ? null
-          : "Nie wymieniaj turbosprężarki w ciemno — kod P0299 (niedoładowanie) to tylko skutek. Dane wskazują, że sama turbina może być sprawna.",
+          : "Nie wymieniaj turbosprężarki w ciemno — kod P0299 mówi tylko, że brakuje ciśnienia, a nie dlaczego. Dane wskazują, że sama sprężarka może być sprawna.",
       ruledOutCauses: [
         for (final c in causes)
           for (final e in c.evidenceAgainst) "${c.name}: $e",
