@@ -67,6 +67,10 @@ class LogSession {
 
   final LogMode mode;
 
+  /// Kody błędów odczytane ze sterowników po zakończeniu logu (zapisane i oczekujące),
+  /// używane przez Asystenta jako dodatkowe dowody.
+  final List<String> dtcCodes;
+
   /// Opis pojazdu, z którego pochodzi log (np. "Volkswagen Touran (1T) • WVG...").
   final String? vehicleLabel;
 
@@ -79,7 +83,20 @@ class LogSession {
     this.isDiesel = false,
     this.vehicleLabel,
     this.mode = LogMode.drive,
+    this.dtcCodes = const [],
   }) : durationSec = points.isEmpty ? 0.0 : (points.last.timeMs - points.first.timeMs) / 1000.0;
+
+  LogSession withDtcCodes(List<String> codes) => LogSession(
+        id: id,
+        title: title,
+        createdAt: createdAt,
+        activePidKeys: activePidKeys,
+        points: points,
+        isDiesel: isDiesel,
+        vehicleLabel: vehicleLabel,
+        mode: mode,
+        dtcCodes: codes,
+      );
 
   Map<String, dynamic> toJson() => {
         "id": id,
@@ -89,6 +106,7 @@ class LogSession {
         "isDiesel": isDiesel,
         "vehicleLabel": vehicleLabel,
         "mode": mode.name,
+        "dtcCodes": dtcCodes,
         "points": points.map((p) => p.toJson()).toList(),
       };
 
@@ -100,6 +118,7 @@ class LogSession {
         isDiesel: json["isDiesel"] as bool? ?? false,
         vehicleLabel: json["vehicleLabel"] as String?,
         mode: json["mode"] == "pull" ? LogMode.pull : LogMode.drive,
+        dtcCodes: (json["dtcCodes"] as List?)?.map((e) => e.toString()).toList() ?? const [],
         points: (json["points"] as List).map((e) => LogPoint.fromJson(e as Map<String, dynamic>)).toList(),
       );
 

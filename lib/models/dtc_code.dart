@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'extended_pid.dart';
+
 class DtcCode {
   final String code; // np. "P0087"
   final String title; // np. "Za niskie ciśnienie paliwa w układzie / na listwie wtryskowej"
@@ -73,7 +76,7 @@ class DtcCode {
       category: "Układ wtryskowy wysokiego ciśnienia (TSI / FSI)",
       description: "Sterownik ECU zarejestrował spadek ciśnienia na listwie wysokiego ciśnienia (HPFP) poniżej wartości zadanej – szczególnie zauważalne na biegu jałowym lub pod obciążeniem.",
       commonCauses: [
-        "Nieszczelny, lejący wtryskiwacz bezpośredni (np. cylinder 1) – paliwo ucieka z listwy do komory spalania, powodując spadek ciśnienia na jałowych obrotach i zalewanie cylindra",
+        "Nieszczelny, lejący wtryskiwacz bezpośredni – paliwo ucieka z listwy do komory spalania, powodując spadek ciśnienia na jałowych obrotach i zalewanie cylindra (zwykle towarzyszy mu wypadanie zapłonu tego cylindra, P030x)",
         "Zużyta lub zacierająca się mechaniczna pompa wysokiego ciśnienia (HPFP) napędzana z wałka rozrządu",
         "Wytarta szklanka popychacza pompy wysokiego ciśnienia na wałku rozrządu",
         "Uszkodzony zawór regulacyjny ciśnienia paliwa (N276 na pompie HPFP)",
@@ -81,8 +84,9 @@ class DtcCode {
         "Uszkodzony czujnik ciśnienia na listwie paliwowej (G247)",
       ],
       diagnosticsSteps: [
-        "Sprawdź korektę wtrysku i wypadanie zapłonów na 1. cylindrze (jeśli wtrysk leje, cylinder 1 będzie miał mocno ujemną korektę i okopconą świecę).",
-        "Wykręć świecę na 1. cylindrze po postoju – jeśli czuć intensywny zapach benzyny lub świeca jest mokra, wtryskiwacz #1 nie trzyma ciśnienia.",
+        "Nagraj log wolnych obrotów i przyspieszenia: spadek ciśnienia tylko na jałowym przy ujemnych korektach paliwa wskazuje na lejący wtryskiwacz, spadek pod obciążeniem — na zasilanie (filtr, pompy).",
+        "Sprawdź korekty poszczególnych cylindrów w diagnostyce producenta i liczniki wypadania zapłonów — cylinder z lejącym wtryskiem wyraźnie odstaje.",
+        "Wykręć świecę podejrzanego cylindra po postoju – jeśli czuć intensywny zapach benzyny lub świeca jest mokra, jego wtryskiwacz nie trzyma ciśnienia.",
         "Wykonaj próbę szczelności listwy paliwa: po zgaszeniu rozgrzanego silnika ciśnienie na listwie powinno powoli rosnąć od temperatury (do 60-100 bar), a nie gwałtownie spadać do zera.",
         "Skontroluj poziom oleju silnikowego – czy nie przybywa oleju i czy nie czuć w nim benzyny (lejący wtryskiwacz spłukuje film olejowy do miski).",
         "Zdejmij pompę wysokiego ciśnienia i skontroluj popychacz (szklankę) pod kątem przetarcia.",
@@ -104,6 +108,83 @@ class DtcCode {
         "Zamień cewkę zapłonową między cylindrem 1 a 2 – zobacz, czy błąd przejdzie na cylinder 2.",
         "Wykręć świecę zapłonową #1 i oceń kolor nagaru (czarna/mokra = lejący wtryskiwacz, biała = brak paliwa).",
         "Zmierz kompresję na zimnym i ciepłym silniku.",
+      ],
+    ),
+    for (int cyl = 2; cyl <= 4; cyl++)
+      "P030$cyl": DtcCode(
+        code: "P030$cyl",
+        title: "Wypadanie zapłonów na cylindrze $cyl (Cylinder $cyl Misfire Detected)",
+        category: "Układ zapłonowy i cylindry",
+        description: "Czujnik położenia wału korbowego wykrył nierówną pracę cylindra $cyl — mieszanka w tym cylindrze nie spala się prawidłowo.",
+        commonCauses: [
+          "Uszkodzona cewka zapłonowa lub świeca cylindra $cyl",
+          "Lejący lub niedolewający wtryskiwacz cylindra $cyl",
+          "Nieszczelność dolotu przy cylindrze $cyl",
+          "Spadek kompresji na cylindrze $cyl",
+        ],
+        diagnosticsSteps: [
+          "Zamień cewkę cylindra $cyl z sąsiednią — jeśli błąd przejdzie na inny cylinder, winna jest cewka.",
+          "Wykręć świecę cylindra $cyl: mokra i czarna = nadmiar paliwa (wtryskiwacz), sucha = brak iskry lub paliwa.",
+          "Zmierz kompresję.",
+        ],
+      ),
+    "P0234": const DtcCode(
+      code: "P0234",
+      title: "Przeładowanie turbosprężarki (Turbocharger Overboost Condition)",
+      category: "Układ doładowania",
+      description: "Rzeczywiste ciśnienie doładowania przekroczyło zadane — sterownik zwykle przechodzi w tryb awaryjny.",
+      commonCauses: [
+        "Zapieczone nagarem kierownice turbiny VGT (zamknięte)",
+        "Usterka siłownika turbiny lub zaworu sterującego (N75)",
+        "Wastegate nie otwiera się (benzyna)",
+      ],
+      diagnosticsSteps: [
+        "Nagraj przyspieszenie z doładowaniem zadanym i rzeczywistym — przeładowanie na niskich obrotach i brak doładowania na wysokich to typowy objaw zapieczonych kierownic.",
+        "Sprawdź ruch siłownika turbiny w pełnym zakresie.",
+      ],
+    ),
+    "P2002": const DtcCode(
+      code: "P2002",
+      title: "Sprawność filtra cząstek stałych poniżej progu (DPF Efficiency Below Threshold)",
+      category: "Układ oczyszczania spalin (DPF)",
+      description: "Sterownik ocenia, że filtr DPF nie działa prawidłowo — zbyt duży lub zbyt mały opór przepływu spalin.",
+      commonCauses: [
+        "Filtr zapchany sadzą lub popiołem",
+        "Uszkodzony (pęknięty) lub usunięty wkład filtra",
+        "Uszkodzone przewody czujnika różnicy ciśnień",
+      ],
+      diagnosticsSteps: [
+        "Nagraj jazdę z różnicą ciśnień DPF i przepływem powietrza — Asystent oceni opór filtra względem przepływu.",
+        "Sprawdź przewody czujnika różnicy ciśnień.",
+      ],
+    ),
+    "P0093": const DtcCode(
+      code: "P0093",
+      title: "Wykryto duży wyciek paliwa w układzie wysokiego ciśnienia (Fuel System Large Leak Detected)",
+      category: "Układ wtryskowy (Common Rail)",
+      description: "Sterownik wykrył, że ciśnienie na szynie spada szybciej, niż wynika z dawki wtrysku.",
+      commonCauses: [
+        "Za duże przelewy wtryskiwaczy",
+        "Nieszczelny przewód lub złącze wysokiego ciśnienia",
+        "Nieszczelny zawór regulacji ciśnienia",
+      ],
+      diagnosticsSteps: [
+        "Obejrzyj przewody wysokiego ciśnienia pod kątem wycieku (zapach oleju napędowego!).",
+        "Wykonaj test przelewów wtryskiwaczy.",
+      ],
+    ),
+    "P2563": const DtcCode(
+      code: "P2563",
+      title: "Czujnik położenia sterowania turbiną — zakres/działanie (Turbocharger Boost Control Position Sensor Range/Performance)",
+      category: "Układ doładowania",
+      description: "Położenie mechanizmu turbiny (VGT) nie zgadza się z oczekiwanym.",
+      commonCauses: [
+        "Zapieczone kierownice VGT",
+        "Uszkodzony elektroniczny siłownik turbiny lub jego czujnik",
+      ],
+      diagnosticsSteps: [
+        "Wykonaj test siłownika w diagnostyce producenta.",
+        "Nagraj przyspieszenie z pozycją VGT zadaną i rzeczywistą (jeśli auto ją udostępnia).",
       ],
     ),
     "P0172": const DtcCode(
@@ -294,18 +375,99 @@ class DtcCode {
     ),
   };
 
-  static DtcCode getByCode(String code) {
+  /// Opisy kodów (angielskie) z pliku danych — wczytywane przy starcie aplikacji.
+  static Map<String, String> _descriptions = {};
+
+  static int get descriptionCount => _descriptions.length;
+
+  /// Opisy 5-cyfrowych kodów VAG (KWP1281/KWP2000) — np. „00532” → „Supply Voltage B+”.
+  static Map<String, String> _vagDescriptions = {};
+
+  static void loadVagDescriptions(String json) {
+    final data = jsonDecode(json) as Map<String, dynamic>;
+    final codes = (data["codes"] ?? data) as Map<String, dynamic>;
+    _vagDescriptions = {for (final e in codes.entries) if (!e.key.startsWith("_")) e.key: e.value.toString()};
+  }
+
+  /// Kod usterki VAG z modułu KWP2000 (TP2.0). Kody 16384+ to zakodowane kody P
+  /// (np. 16684 = P0300) — wtedy używany jest opis kodu P.
+  static DtcCode fromVagFault(int code, {String? obdCode}) {
+    final five = code.toString().padLeft(5, '0');
+    if (obdCode != null) {
+      final base = getByCode(obdCode, profile: VehicleProfile.vag);
+      return DtcCode(
+        code: "$five / $obdCode",
+        title: base.title,
+        category: base.category,
+        description: base.description,
+        commonCauses: base.commonCauses,
+        diagnosticsSteps: base.diagnosticsSteps,
+      );
+    }
+    final desc = _vagDescriptions[five];
+    return DtcCode(
+      code: five,
+      title: desc ?? "Kod usterki VAG $five",
+      category: "Kod producenta VAG",
+      description: desc != null
+          ? "Opis kodu VAG (EN): $desc."
+          : "Kod usterki VAG spoza wbudowanej bazy — sprawdź jego znaczenie w dokumentacji serwisowej.",
+      commonCauses: const ["Usterka elementu wskazanego w opisie kodu lub jego instalacji elektrycznej"],
+      diagnosticsSteps: const ["Sprawdź wtyczki i przewody elementu wskazanego w opisie kodu."],
+    );
+  }
+
+  /// Wczytuje opisy z JSON: {"codes": {"P0087": "...", ...}}.
+  static void loadDescriptions(String json) {
+    final data = jsonDecode(json) as Map<String, dynamic>;
+    final codes = (data["codes"] ?? data) as Map<String, dynamic>;
+    _descriptions = {
+      for (final e in codes.entries)
+        if (!e.key.startsWith("_")) e.key.toUpperCase(): e.value.toString(),
+    };
+  }
+
+  /// Kod zdefiniowany przez normę SAE J2012 (to samo znaczenie w każdym aucie).
+  /// Pozostałe (np. P1xxx, U1xxx) mają znaczenie zależne od producenta.
+  static bool isGenericCode(String code) {
+    if (code.length < 5) return false;
+    final letter = code[0];
+    final d1 = code[1];
+    if (letter == "P") {
+      if (d1 == "0" || d1 == "2") return true;
+      if (d1 == "3") return code.substring(2, 3) == "4"; // P34xx — wyłączanie cylindrów
+      return false;
+    }
+    return d1 == "0" || d1 == "3";
+  }
+
+  /// Opis angielski dopuszczalny dla danego auta: kody standardowe zawsze
+  /// (bez numerów części VAG w innych markach), kody producenta tylko w VAG.
+  static String? descriptionFor(String code, {VehicleProfile? profile}) {
+    final d = _descriptions[code];
+    if (d == null) return null;
+    final isVag = profile == VehicleProfile.vag;
+    if (!isGenericCode(code) && !isVag) return null;
+    if (isVag) return d;
+    // Numery części VAG (np. „(G28)”, „(N75)”) w innych markach wprowadzałyby w błąd
+    return d.replaceAll(RegExp(r'\s*\((?:[GNJVFZ]\d{1,4}[a-z]?(?:\s*/\s*[GNJVFZ]\d{1,4}[a-z]?)*)\)'), "").trim();
+  }
+
+  static DtcCode getByCode(String code, {VehicleProfile? profile}) {
     final upper = code.toUpperCase().trim();
     if (database.containsKey(upper)) {
       return database[upper]!;
     }
     final area = systemAreaFor(upper);
+    final desc = descriptionFor(upper, profile: profile);
     return DtcCode(
       code: upper,
-      title: "Kod błędu OBD-II $upper",
+      title: desc ?? "Kod błędu OBD-II $upper",
       category: area,
-      description: "Zarejestrowano kod usterki w pamięci sterownika. Obszar: $area. "
-          "Tego kodu nie ma w wbudowanej bazie — sprawdź jego dokładne znaczenie dla swojego modelu.",
+      description: desc != null
+          ? "Opis kodu (EN): $desc. Obszar: $area."
+          : "Zarejestrowano kod usterki w pamięci sterownika. Obszar: $area. "
+              "${isGenericCode(upper) ? 'Tego kodu nie ma we wbudowanej bazie' : 'To kod producenta — jego znaczenie zależy od marki'} — sprawdź jego dokładne znaczenie dla swojego modelu.",
       commonCauses: [
         "Usterka czujnika, osprzętu silnika lub instalacji elektrycznej",
         "Wartość pomiarowa poza zakresem tolerancji sterownika",

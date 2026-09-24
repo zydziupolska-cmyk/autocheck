@@ -43,6 +43,7 @@ dependencies:
   intl: ^0.20.3
   csv: ^8.0.0
   flutter_bluetooth_serial: ^0.4.0
+  file_picker: ^13.1.0
 
 dev_dependencies:
   flutter_test:
@@ -65,6 +66,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/dtc/obd_descriptions_en.json
+    - assets/dtc/vag_fault_codes_en.json
 
   # To add assets to your application, add an assets section, like this:
   # assets:

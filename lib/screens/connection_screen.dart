@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
@@ -7,6 +8,7 @@ import '../models/dtc_code.dart';
 import '../models/vehicle_info.dart';
 import '../services/obd_service.dart';
 import '../theme/app_theme.dart';
+import 'learning_screen.dart';
 
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({super.key});
@@ -23,6 +25,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   List<DtcCode>? _scannedDtcCodes;
   bool _isLoadingDtc = false;
   bool _dtcReadFailed = false;
+  String? _moduleScanProgress;
+  String? _moduleScanSummary;
 
   @override
   void initState() {
@@ -99,6 +103,80 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         AppTheme.red,
       );
     }
+  }
+
+  void _showAdapterInfo(ObdService obd) {
+    final info = obd.adapterInfo;
+    final text = info.entries.map((e) => "${e.key}: ${e.value}").join("\n");
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Text("Adapter i możliwości", style: TextStyle(color: AppTheme.textPrimary)),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final e in info.entries)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text.rich(TextSpan(children: [
+                    TextSpan(text: "${e.key}: ", style: const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+                    TextSpan(text: e.value, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12, fontWeight: FontWeight.w600)),
+                  ])),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: text));
+              Navigator.pop(ctx);
+              _showSnack("Skopiowano informacje o adapterze", AppTheme.green);
+            },
+            child: const Text("Kopiuj"),
+          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Zamknij")),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _scanVagModules(ObdService obd) async {
+    setState(() {
+      _moduleScanProgress = "Przygotowanie skanu...";
+      _moduleScanSummary = null;
+    });
+    // Nowsze moduły (UDS, MQB i nowsze), potem starsze (TP2.0 / KWP2000, platformy PQ)
+    final uds = await obd.scanVagModules(onProgress: (done, total, m) {
+      if (mounted) setState(() => _moduleScanProgress = "UDS ${done + 1 > total ? total : done + 1}/$total: ${m.name}");
+    });
+    final tp20 = await obd.scanVagTp20Modules(onProgress: (done, total, name) {
+      if (mounted) setState(() => _moduleScanProgress = "TP2.0 ${done + 1 > total ? total : done + 1}/$total: $name");
+    });
+    if (!mounted) return;
+    final responded = [...uds, ...tp20].where((r) => r.responded).toList();
+    final withFaults = responded.where((r) => r.dtcs.isNotEmpty).toList();
+    // Ten sam kod z tego samego modułu (np. silnik odpowiada i przez UDS, i przez TP2.0) — raz
+    final seen = <String>{};
+    final codes = <DtcCode>[
+      for (final r in responded)
+        for (final d in r.dtcs)
+          if (seen.add("${r.module.name}|${d.code}")) d,
+    ];
+    String label(ModuleScanResult r) =>
+        "${r.module.name}${r.identification != null ? ' (${r.identification})' : ''}";
+    setState(() {
+      _moduleScanProgress = null;
+      _dtcReadFailed = false;
+      _scannedDtcCodes = codes;
+      _moduleScanSummary = responded.isEmpty
+          ? "Żaden moduł nie odpowiedział ani przez UDS, ani przez TP2.0. Kody silnika odczytasz przyciskiem „Odczytaj kody błędów”."
+          : "Odpowiedziało ${responded.length} modułów: ${responded.map(label).join(', ')}. "
+              "${withFaults.isEmpty ? 'Żaden nie ma zapisanych błędów.' : 'Błędy w: ${withFaults.map((r) => r.module.name).toSet().join(', ')}.'}";
+    });
   }
 
   Future<void> _clearDtc(ObdService obd) async {
@@ -261,8 +339,16 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 if (obd.status == ObdConnectionStatus.connected && obd.adapterId.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(
-                    "Adapter: ${obd.adapterId}${obd.protocolName.isNotEmpty ? ' • ${obd.protocolName}' : ''}",
+                    "Adapter: ${obd.stnId ?? obd.adapterId}${obd.protocolName.isNotEmpty ? ' • ${obd.protocolName}' : ''}",
                     style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
+                  ),
+                  GestureDetector(
+                    onTap: () => _showAdapterInfo(obd),
+                    child: const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text("Szczegóły adaptera ›",
+                          style: TextStyle(color: AppTheme.cyan, fontSize: 12, fontWeight: FontWeight.w600)),
+                    ),
                   ),
                 ],
               ],
@@ -646,6 +732,42 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               ),
             ],
           ),
+          if (obd.canScanVagModules) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _moduleScanProgress != null || _isLoadingDtc ? null : () => _scanVagModules(obd),
+                icon: _moduleScanProgress != null
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.manage_search, size: 18),
+                label: Text(_moduleScanProgress ?? "Skanuj wszystkie moduły (VAG)"),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.cyan,
+                  side: const BorderSide(color: AppTheme.cyan),
+                ),
+              ),
+            ),
+          ],
+          if (obd.status == ObdConnectionStatus.connected) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LearningScreen())),
+                icon: const Icon(Icons.hearing, size: 18),
+                label: const Text("Nauka od testera (podsłuch Autela)"),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.purple,
+                  side: const BorderSide(color: AppTheme.purple),
+                ),
+              ),
+            ),
+          ],
+          if (_moduleScanSummary != null) ...[
+            const SizedBox(height: 8),
+            Text(_moduleScanSummary!, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+          ],
           if (_dtcReadFailed) ...[
             const SizedBox(height: 12),
             const Text(

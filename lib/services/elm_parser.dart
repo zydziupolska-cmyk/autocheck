@@ -267,6 +267,35 @@ class ElmParser {
   // Dekodery usług OBD
   // ---------------------------------------------------------------------------
 
+  /// Długość danych (bez numeru PID) standardowych PIDów Mode 01 wg SAE J1979.
+  /// Potrzebna do rozdzielenia odpowiedzi na zapytanie o kilka PIDów naraz.
+  static const Map<int, int> mode01DataLength = {
+    0x04: 1, 0x05: 1, 0x06: 1, 0x07: 1, 0x08: 1, 0x09: 1, 0x0A: 1, 0x0B: 1, 0x0C: 2, 0x0D: 1,
+    0x0E: 1, 0x0F: 1, 0x10: 2, 0x11: 1, 0x14: 2, 0x15: 2, 0x1C: 1, 0x1F: 2, 0x21: 2, 0x22: 2,
+    0x23: 2, 0x24: 4, 0x2C: 1, 0x2D: 1, 0x2E: 1, 0x2F: 1, 0x31: 2, 0x33: 1, 0x34: 4, 0x3C: 2,
+    0x42: 2, 0x43: 2, 0x44: 2, 0x45: 1, 0x46: 1, 0x49: 1, 0x4A: 1, 0x4C: 1, 0x51: 1, 0x59: 2,
+    0x5A: 1, 0x5C: 1, 0x5E: 2, 0x61: 1, 0x62: 1, 0x63: 2, 0x66: 5, 0x69: 7, 0x6D: 11, 0x70: 10,
+    0x71: 6, 0x72: 5, 0x73: 5, 0x74: 5, 0x77: 5, 0x78: 9, 0x79: 9, 0x7A: 7, 0x7B: 7, 0x7C: 9,
+    0x87: 5,
+  };
+
+  /// Rozdziela odpowiedź na zapytanie o kilka PIDów naraz ([0x41, PID1, dane1..., PID2, dane2...])
+  /// na dane poszczególnych PIDów. Sterownik może pominąć PIDy, których nie obsługuje.
+  /// Zwraca null, gdy odpowiedź zawiera PID o nieznanej długości (nie da się jej rozdzielić).
+  static Map<int, List<int>>? splitMultiPid(List<int> data) {
+    if (data.isEmpty || data[0] != 0x41) return null;
+    final out = <int, List<int>>{};
+    int i = 1;
+    while (i < data.length) {
+      final pid = data[i];
+      final len = mode01DataLength[pid];
+      if (len == null || i + 1 + len > data.length) return out.isEmpty ? null : out;
+      out[pid] = data.sublist(i + 1, i + 1 + len);
+      i += 1 + len;
+    }
+    return out;
+  }
+
   /// Maska obsługiwanych PIDów z odpowiedzi 41 00/20/40/... → zbiór numerów PID.
   static Set<int> decodeSupportedPids(List<int> data) {
     final result = <int>{};
@@ -303,6 +332,27 @@ class ElmParser {
       if (count != null && codes.length >= count) break;
     }
     return codes;
+  }
+
+  /// Dekoduje odpowiedź UDS ReadDTCInformation / reportDTCByStatusMask
+  /// ([0x59, 0x02, maska, (DTC 3 bajty + status)...]). Zwraca (kod, bajt typu usterki, oczekujący).
+  /// Kody bez aktywnego statusu (np. tylko historia) są pomijane.
+  static List<(String, int, bool)> decodeUdsDtcs(List<int> data) {
+    var d = data;
+    // Odpowiedź „czekaj” (7F 19 78) poprzedzająca właściwą odpowiedź
+    while (d.length >= 3 && d[0] == 0x7F && d[2] == 0x78) {
+      d = d.sublist(3);
+    }
+    if (d.length < 3 || d[0] != 0x59 || d[1] != 0x02) return const [];
+    final out = <(String, int, bool)>[];
+    for (int i = 3; i + 3 < d.length; i += 4) {
+      final status = d[i + 3];
+      // bit 0 = testFailed, bit 2 = pendingDTC, bit 3 = confirmedDTC
+      if (status & 0x0D == 0) continue;
+      if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 0) continue;
+      out.add((dtcFromBytes(d[i], d[i + 1]), d[i + 2], status & 0x08 == 0));
+    }
+    return out;
   }
 
   static String dtcFromBytes(int b1, int b2) {

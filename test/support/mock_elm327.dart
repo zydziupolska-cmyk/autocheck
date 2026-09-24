@@ -26,7 +26,14 @@ class MockElm327 {
   final MockBus bus;
   final bool petrol;
 
-  MockElm327({this.bus = MockBus.can11, this.petrol = false});
+  /// Adapter z układem STN (komendy ST: STI, STDI, STPX) — np. vLinker, OBDLink.
+  final bool stn;
+
+  /// Zachowanie części klonów (np. vLinker FS): ATSP przywraca domyślne formatowanie
+  /// (nagłówki i spacje wyłączone).
+  final bool resetsFormattingOnProtocol;
+
+  MockElm327({this.bus = MockBus.can11, this.petrol = false, this.stn = false, this.resetsFormattingOnProtocol = false});
 
   late final ServerSocket _server;
   final List<String> receivedCommands = [];
@@ -48,6 +55,42 @@ class MockElm327 {
   /// Symuluje wyłączony zapłon: adapter odpowiada, ale żaden sterownik nie.
   bool ignitionOff = false;
 
+  /// Dodatkowe moduły VAG na CAN 11-bit: adres zapytania → (adres odpowiedzi, rekordy DTC UDS
+  /// po 4 bajty: 3 bajty kodu + status).
+  final Map<String, (String, List<List<int>>)> vagModules = {};
+
+  bool debugLog = false;
+
+  /// Moduły VAG na TP2.0 (starsze platformy): adres → lista (kod VAG, status).
+  final Map<int, List<(int, int)>> tp20Modules = {};
+
+  /// Moduły TP2.0, które na odczyt kodów najpierw odpowiadają „czekaj” (7F 18 78).
+  final Set<int> tp20SlowModules = {};
+
+  // --- Stan TP2.0 (surowy CAN, protokół użytkownika B) ---
+  bool _rawMode = false;
+  int? _tpDest;
+  int _tpEcuSeq = 0;
+  final List<int> _tpIncoming = [];
+  final List<List<int>> _tpOutQueue = [];
+  bool _tpPending = false;
+  List<int>? _tpPendingResponse;
+
+  /// Dodatkowe identyfikatory UDS (usługa 22) sterownika silnika: "1234" → bajty danych.
+  final Map<String, List<int>> udsDids = {};
+
+  /// Ruch na magistrali oddawany w trybie podsłuchu (ATMA/STMA) — linie jak z adaptera.
+  final List<String> monitorTraffic = [];
+  /// Po tylu liniach adapter zgłasza BUFFER FULL i wraca do '>' (raz).
+  int? monitorBufferFullAfter;
+  bool _monitoring = false;
+  int _monitorPos = 0;
+  int _monitorStarts = 0;
+  int get monitorStarts => _monitorStarts;
+
+  /// Czy sterownik obsługuje zapytania o kilka PIDów naraz (większość aut na CAN tak).
+  bool multiPidSupported = true;
+
   /// Obroty zwracane przez ECU silnika.
   double rpm = 850;
 
@@ -68,8 +111,13 @@ class MockElm327 {
 
   static const vin = "WVGZZZ1TZFW011407";
 
-  static Future<MockElm327> start({MockBus bus = MockBus.can11, bool petrol = false}) async {
-    final mock = MockElm327(bus: bus, petrol: petrol);
+  static Future<MockElm327> start({
+    MockBus bus = MockBus.can11,
+    bool petrol = false,
+    bool stn = false,
+    bool resetsFormattingOnProtocol = false,
+  }) async {
+    final mock = MockElm327(bus: bus, petrol: petrol, stn: stn, resetsFormattingOnProtocol: resetsFormattingOnProtocol);
     mock._server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     mock._server.listen(mock._handleClient);
     return mock;
@@ -82,10 +130,29 @@ class MockElm327 {
     client.done.catchError((_) => null);
     client.listen(onError: (_) {}, (data) async {
       buffer += latin1.decode(data);
+      if (_monitoring && buffer.isNotEmpty) {
+        // Dowolny znak przerywa podsłuch; sam znak jest pomijany
+        _monitoring = false;
+        buffer = buffer.substring(1);
+        try {
+          client.add(latin1.encode("STOPPED\r\r>"));
+          await client.flush();
+        } catch (_) {
+          return;
+        }
+      }
       while (buffer.contains("\r")) {
         final idx = buffer.indexOf("\r");
         final cmd = buffer.substring(0, idx);
         buffer = buffer.substring(idx + 1);
+        final norm = cmd.replaceAll(" ", "").toUpperCase();
+        if (norm == "ATMA" || (stn && norm == "STMA")) {
+          receivedCommands.add(norm);
+          _monitoring = true;
+          _monitorStarts++;
+          _streamMonitor(client);
+          continue;
+        }
         final response = _respond(cmd);
         // Wysyłaj w kawałkach po 20 bajtów (jak notyfikacje BLE)
         final bytes = latin1.encode(response);
@@ -101,15 +168,43 @@ class MockElm327 {
     });
   }
 
+  Future<void> _streamMonitor(Socket client) async {
+    try {
+      while (_monitoring && _monitorPos < monitorTraffic.length) {
+        final limit = monitorBufferFullAfter;
+        if (limit != null && _monitorPos == limit) {
+          monitorBufferFullAfter = null;
+          _monitoring = false;
+          client.add(latin1.encode("BUFFER FULL\r\r>"));
+          await client.flush();
+          return;
+        }
+        client.add(latin1.encode("${monitorTraffic[_monitorPos++]}\r"));
+        await client.flush();
+        await Future.delayed(const Duration(milliseconds: 1));
+      }
+    } catch (_) {}
+  }
+
   String _respond(String rawCmd) {
     final cmd = rawCmd.replaceAll(" ", "").toUpperCase();
     receivedCommands.add(cmd);
+    if (debugLog) print(">> $cmd  (header $_header, raw $_rawMode)");
     final echo = _echo ? "$rawCmd\r" : "";
     return "$echo${_body(cmd)}\r\r>";
   }
 
   String _body(String cmd) {
     if (cmd.startsWith("AT")) return _atCommand(cmd.substring(2));
+    if (_rawMode) return _tp20Frame(cmd);
+    if (cmd.startsWith("ST")) {
+      if (!stn) return "?";
+      if (cmd == "STI") return "STN2255 v5.10.3";
+      if (cmd == "STDI") return "vLinker MC+ (emulator)";
+      final m = RegExp(r'^STPXD:([0-9A-F]+)(?:,R:(\d+))?$').firstMatch(cmd);
+      if (m != null) return _body(m.group(1)!);
+      return "?";
+    }
 
     var obd = cmd;
     if (!RegExp(r'^[0-9A-F]+$').hasMatch(obd)) return "?";
@@ -124,6 +219,13 @@ class MockElm327 {
       case MockBus.can11:
         if (_header == "7DF" || _header == "7E0") targets.add(("7E8", true));
         if (_header == "7DF" || _header == "7E1") targets.add(("7E9", false));
+        final module = vagModules[_header];
+        if (module != null) {
+          if (request.length >= 2 && request[0] == 0x19 && request[1] == 0x02) {
+            return _format(module.$1, [0x59, 0x02, 0xFF, for (final r in module.$2) ...r]).join("\r");
+          }
+          return "NO DATA";
+        }
       case MockBus.can29:
         if (_header == "DB33F1" || _header == "DA10F1") targets.add(("18DAF110", true));
         if (_header == "DB33F1" || _header == "DA18F1") targets.add(("18DAF118", false));
@@ -168,6 +270,12 @@ class MockElm327 {
     }
     if (at == "RV") return "14.5V";
     if (at.startsWith("SH")) _header = at.substring(2);
+    if (at == "SPB") _rawMode = true;
+    if (at.startsWith("SP") && at != "SPB") _rawMode = false;
+    if (at.startsWith("SP") && resetsFormattingOnProtocol) {
+      _headers = false;
+      _spaces = false;
+    }
     return "OK";
   }
 
@@ -288,6 +396,16 @@ class MockElm327 {
 
   List<int>? _engine(List<int> req) {
     if (req.isEmpty) return null;
+    // Zapytanie o kilka PIDów naraz: 01 0C 0D 0B ... → 41 0C dane 0D dane 0B dane ...
+    if (req[0] == 0x01 && req.length > 2 && bus != MockBus.kwp) {
+      if (!multiPidSupported) return null;
+      final out = <int>[0x41];
+      for (final pid in req.sublist(1)) {
+        final single = _engine([0x01, pid]);
+        if (single != null) out.addAll(single.sublist(1));
+      }
+      return out.length > 1 ? out : null;
+    }
     switch (req[0]) {
       case 0x06:
         if (!petrol || bus == MockBus.kwp || req.length < 2) return null;
@@ -360,6 +478,12 @@ class MockElm327 {
         }
       case 0x03:
         return [0x43, engineDtcs.length, for (final d in engineDtcs) ...d];
+      case 0x19:
+        // UDS ReadDTCInformation (reportDTCByStatusMask): 3 bajty kodu + status 0x08 (potwierdzony)
+        if (req.length >= 2 && req[1] == 0x02) {
+          return [0x59, 0x02, 0xFF, for (final d in engineDtcs) ...[...d, 0x00, 0x08]];
+        }
+        return [0x7F, 0x19, 0x12];
       case 0x07:
         return [0x47, 0x00];
       case 0x04:
@@ -377,6 +501,11 @@ class MockElm327 {
         }
         return null;
       case 0x22:
+        if (req.length >= 3) {
+          final did = "${_hex(req[1])}${_hex(req[2])}";
+          final data = udsDids[did];
+          if (data != null) return [0x62, req[1], req[2], ...data];
+        }
         // UDS VAG (tylko wersja benzynowa): doładowanie rzeczywiste 202A i zadane 2029 w hPa
         if (petrol && req.length >= 3 && req[1] == 0x20 && (req[2] == 0x2A || req[2] == 0x29)) {
           final hPa = (req[2] == 0x2A ? mapKpa : targetKpa) * 10;
@@ -411,5 +540,113 @@ class MockElm327 {
         return null;
     }
     return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Emulacja TP2.0 (moduł odbiera na 0x740, wysyła na 0x300)
+  // ---------------------------------------------------------------------------
+
+  String _tpLine(int id, List<int> data) {
+    final parts = [id.toRadixString(16).padLeft(3, '0').toUpperCase(), ...data.map(_hex)];
+    return _headers ? (_spaces ? parts.join(" ") : parts.join()) : data.map(_hex).join(_spaces ? " " : "");
+  }
+
+  String _tp20Frame(String hex) {
+    if (!RegExp(r'^[0-9A-F]+$').hasMatch(hex) || hex.length.isOdd) return "?";
+    final d = [for (int i = 0; i < hex.length; i += 2) int.parse(hex.substring(i, i + 2), radix: 16)];
+
+    if (_header == "200") {
+      if (d.length == 7 && d[1] == 0xC0 && tp20Modules.containsKey(d[0])) {
+        _tpDest = d[0];
+        _tpEcuSeq = 0;
+        _tpIncoming.clear();
+        _tpOutQueue.clear();
+        return _tpLine(0x200 + d[0], [0x00, 0xD0, 0x00, 0x03, 0x40, 0x07, 0x01]);
+      }
+      return "NO DATA";
+    }
+    if (_header != "740" || _tpDest == null) return "NO DATA";
+
+    final op = d[0] >> 4;
+    if (d[0] == 0xA0 || d[0] == 0xA3) {
+      final lines = [_tpLine(0x300, [0xA1, 0x0F, 0x8A, 0xFF, 0x4A, 0xFF])];
+      // Moduł, który wcześniej odpowiedział „czekaj”, teraz wysyła właściwą odpowiedź
+      if (d[0] == 0xA3 && _tpPending && _tpPendingResponse != null) {
+        _tpPending = false;
+        _queueResponse(_tpPendingResponse!);
+        lines.addAll(_flushQueue());
+      }
+      return lines.join("\r");
+    }
+    if (d[0] == 0xA8) {
+      _tpDest = null;
+      return _tpLine(0x300, [0xA8]);
+    }
+    if (op == 0xB) {
+      final lines = _flushQueue();
+      return lines.isEmpty ? "NO DATA" : lines.join("\r");
+    }
+    if (op <= 0x3) {
+      _tpIncoming.addAll(d.sublist(1));
+      final lines = <String>[];
+      if (op == 0x0 || op == 0x1) lines.add(_tpLine(0x300, [0xB0 | ((d[0] + 1) & 0x0F)]));
+      if (op == 0x1 || op == 0x3) {
+        final len = (_tpIncoming[0] << 8) | _tpIncoming[1];
+        final req = _tpIncoming.sublist(2, 2 + len);
+        _tpIncoming.clear();
+        final resp = _kwp(req);
+        if (resp != null) {
+          _queueResponse(resp);
+          lines.addAll(_flushQueue());
+        }
+      }
+      return lines.isEmpty ? "NO DATA" : lines.join("\r");
+    }
+    return "NO DATA";
+  }
+
+  List<int>? _kwp(List<int> req) {
+    final dest = _tpDest!;
+    if (req.length == 2 && req[0] == 0x10) return [0x50, req[1]];
+    if (req.length == 2 && req[0] == 0x1A && req[1] == 0x9B) {
+      final id = dest == 0x01 ? "03L906023PJ  R4 2,0L EDC G000SG  5201" : "1K0907379AC ESP MK60EC1  H30 0107";
+      return [0x5A, 0x9B, ...id.codeUnits];
+    }
+    if (req.length == 4 && req[0] == 0x18) {
+      final faults = tp20Modules[dest]!;
+      final resp = [0x58, faults.length, for (final (code, status) in faults) ...[code >> 8, code & 0xFF, status]];
+      if (tp20SlowModules.contains(dest)) {
+        _tpPending = true;
+        _tpPendingResponse = resp;
+        return [0x7F, 0x18, 0x78];
+      }
+      return resp;
+    }
+    return [0x7F, req.isEmpty ? 0 : req[0], 0x11];
+  }
+
+  /// Dzieli odpowiedź na pakiety TP2.0; co 4. pakiet (i ostatni) wymaga ACK od testera.
+  void _queueResponse(List<int> msg) {
+    final payload = [msg.length >> 8, msg.length & 0xFF, ...msg];
+    final chunks = [
+      for (int i = 0; i < payload.length; i += 7) payload.sublist(i, i + 7 > payload.length ? payload.length : i + 7),
+    ];
+    for (int i = 0; i < chunks.length; i++) {
+      final last = i == chunks.length - 1;
+      final op = last ? 0x10 : ((i + 1) % 4 == 0 ? 0x00 : 0x20);
+      _tpOutQueue.add([op | _tpEcuSeq, ...chunks[i]]);
+      _tpEcuSeq = (_tpEcuSeq + 1) & 0x0F;
+    }
+  }
+
+  /// Wysyła pakiety do pierwszego wymagającego ACK (włącznie).
+  List<String> _flushQueue() {
+    final lines = <String>[];
+    while (_tpOutQueue.isNotEmpty) {
+      final f = _tpOutQueue.removeAt(0);
+      lines.add(_tpLine(0x300, f));
+      if ((f[0] >> 4) & 0x2 == 0) break; // czeka na ACK
+    }
+    return lines;
   }
 }

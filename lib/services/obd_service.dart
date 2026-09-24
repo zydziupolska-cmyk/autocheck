@@ -8,7 +8,9 @@ import '../models/obd_pid.dart';
 import '../models/extended_pid.dart';
 import '../models/dtc_code.dart';
 import '../models/vehicle_info.dart';
+import '../models/vag_modules.dart';
 import 'elm_parser.dart';
+import 'vag_tp20.dart';
 
 enum ObdConnectionStatus {
   disconnected,
@@ -50,6 +52,17 @@ class ObdService extends ChangeNotifier {
   Completer<String>? _pendingResponse;
   Future<void> _commandQueue = Future.value();
   bool _needsDrain = false;
+  bool _customFlowControl = false;
+
+  // --- Podsłuch magistrali (ATMA/STMA) ---
+  bool _monitoring = false;
+  bool _monitorStopping = false;
+  String _monitorCmd = "ATMA";
+  void Function(String line)? _monitorSink;
+  Completer<void>? _monitorHold; // blokuje kolejkę komend na czas podsłuchu
+  Completer<void>? _monitorStopped;
+  final StringBuffer _monitorLine = StringBuffer();
+  int _monitorRestarts = 0;
 
   // --- Stan protokołu OBD ---
   ObdBusType _bus = ObdBusType.unknown;
@@ -57,6 +70,12 @@ class ObdService extends ChangeNotifier {
   String? _engineHeader; // adres zapytań fizycznych do ECU silnika, np. "7E0"
   String? _activeHeader; // ostatnio ustawiony ATSH
   bool _responseCountSupported = false;
+  bool _multiPidSupported = false;
+  String? _stnId; // np. "STN2120 v5.6.19" — adapter obsługuje komendy ST
+  String _protocolNumber = "6"; // z ATDPN — do przywrócenia po trybie surowego CAN
+  bool _stpxSupported = false;
+  final Map<String, String> _adapterInfo = {};
+  int _multiPidFailures = 0;
   Set<int> _supportedPids = {};
   Set<int> _supportedMode06 = {};
   double? _baroKpa;
@@ -75,6 +94,8 @@ class ObdService extends ChangeNotifier {
   VehicleInfo? get vehicleInfo => _vehicleInfo;
   String get adapterId => _adapterId;
   String get protocolName => _protocolName;
+  ObdBusType get busType => _bus;
+  bool get isMonitoring => _monitoring;
   String? get engineEcuAddress => _engineEcu;
   Set<int> get supportedPidNumbers => _supportedPids;
 
@@ -306,11 +327,18 @@ class ObdService extends ChangeNotifier {
 
       _rx.clear();
       _needsDrain = false;
+      _endMonitor();
+      _customFlowControl = false;
       _bus = ObdBusType.unknown;
       _engineEcu = null;
       _engineHeader = null;
       _activeHeader = null;
       _responseCountSupported = false;
+      _multiPidSupported = false;
+      _multiPidFailures = 0;
+      _stnId = null;
+      _stpxSupported = false;
+      _adapterInfo.clear();
       _supportedPids = {};
       _supportedMode06 = {};
       _udsPressureScale.clear();
@@ -328,6 +356,10 @@ class ObdService extends ChangeNotifier {
 
   void _onRx(List<int> data) {
     if (data.isEmpty) return;
+    if (_monitoring) {
+      _onMonitorRx(data);
+      return;
+    }
     // ELM wysyła czyste ASCII; bajty 0x00 pojawiają się w niektórych klonach
     _rx.write(String.fromCharCodes(data.where((b) => b != 0)));
     final text = _rx.toString();
@@ -422,6 +454,19 @@ class ObdService extends ChangeNotifier {
       await _sendCommand("ATSH${header.substring(2)}");
     } else {
       await _sendCommand("ATSH$header");
+      // Moduły spoza 7E0-7E7 (np. VAG 714 → 77E): sterowanie przepływem musi iść na adres
+      // zapytań, inaczej długie odpowiedzi urywają się po pierwszej ramce.
+      final v = int.tryParse(header, radix: 16);
+      final obdRange = v != null && v >= 0x7DF && v <= 0x7E7;
+      if (!obdRange && _isCan) {
+        await _sendCommand("ATFCSH$header");
+        await _sendCommand("ATFCSD300000");
+        await _sendCommand("ATFCSM1");
+        _customFlowControl = true;
+      } else if (_customFlowControl) {
+        await _sendCommand("ATFCSM0");
+        _customFlowControl = false;
+      }
     }
     _activeHeader = header;
   }
@@ -468,8 +513,15 @@ class ObdService extends ChangeNotifier {
 
     // Liczba oczekiwanych odpowiedzi — adapter kończy od razu po pierwszej
     // zamiast czekać na timeout magistrali (kilkukrotnie szybsze logowanie).
-    final useCount = singleFrame && !broadcast && _responseCountSupported && targetHeader != null;
-    final raw = await _sendCommand(useCount ? "${cmd}1" : cmd, timeout: timeout);
+    final String wire;
+    if (_stpxSupported && !broadcast && targetHeader != null) {
+      // Jeden sterownik → dokładnie jedna odpowiedź (także wieloramkowa)
+      wire = "STPX D:$cmd,R:1";
+    } else {
+      final useCount = singleFrame && !broadcast && _responseCountSupported && targetHeader != null;
+      wire = useCount ? "${cmd}1" : cmd;
+    }
+    final raw = await _sendCommand(wire, timeout: timeout);
     final responses = ElmParser.parse(raw, _bus);
 
     if (!broadcast && header == null && _engineEcu != null) {
@@ -491,17 +543,34 @@ class ObdService extends ChangeNotifier {
     if (!_hasTransport) return false;
 
     await _sendCommand("ATE0"); // echo off
-    await _sendCommand("ATL0"); // bez dodatkowych LF
-    await _sendCommand("ATS1"); // spacje między bajtami
-    await _sendCommand("ATH1"); // nagłówki ON — rozróżniamy sterowniki
-    await _sendCommand("ATAT1"); // adaptacyjny timeout
+    // Protokół przed formatowaniem: niektóre adaptery (np. vLinker FS i klony) po ATSP
+    // przywracają domyślne formatowanie, a wtedy znikałyby nagłówki sterowników
     await _sendCommand("ATSP0"); // automatyczny wybór protokołu
+    await _applyFormatting();
     _adapterId = (await _sendCommand("ATI")).replaceAll("\n", " ").trim();
+    _adapterInfo["ATI (identyfikator)"] = _adapterId;
+    _adapterInfo["AT@1 (opis urządzenia)"] = (await _sendCommand("AT@1")).replaceAll("\n", " ").trim();
+
+    // Komendy rozszerzone ST (układ STN — vLinker, OBDLink): identyfikacja
+    final sti = (await _sendCommand("STI")).replaceAll("\n", " ").trim();
+    if (sti.isNotEmpty && !sti.contains("?")) {
+      _stnId = sti;
+      _adapterInfo["STI (układ STN)"] = sti;
+      final stdi = (await _sendCommand("STDI")).replaceAll("\n", " ").trim();
+      if (stdi.isNotEmpty && !stdi.contains("?")) _adapterInfo["STDI (sprzęt)"] = stdi;
+    } else {
+      _adapterInfo["STI (układ STN)"] = "brak — zwykły ELM327";
+    }
 
     _updateStatus(ObdConnectionStatus.initializing, "Wyszukiwanie protokołu OBD (do 20 s)...");
     final raw0100 = await _sendCommand("0100", timeout: const Duration(seconds: 20));
-    _bus = ElmParser.busFromProtocolNumber(await _sendCommand("ATDPN"));
+    final dpn = await _sendCommand("ATDPN");
+    _protocolNumber = dpn.trim().toUpperCase().replaceFirst(RegExp(r'^A'), '');
+    _bus = ElmParser.busFromProtocolNumber(dpn);
     _protocolName = (await _sendCommand("ATDP")).trim();
+    _adapterInfo["Protokół"] = _protocolName;
+    // Po wyszukaniu protokołu formatowanie jeszcze raz — na wypadek resetu przez adapter
+    await _applyFormatting();
 
     final responses = ElmParser.parse(raw0100, _bus).where((r) => r.matches(0x41, [0x00])).toList();
     if (responses.isEmpty) {
@@ -559,6 +628,23 @@ class ObdService extends ChangeNotifier {
       _responseCountSupported = ElmParser.parse(raw, _bus).any((r) => r.matches(0x41, [0x00]));
     }
 
+    // STPX (komenda STN): wysłanie z liczbą oczekiwanych odpowiedzi — działa także dla
+    // odpowiedzi wieloramkowych, więc adapter nie czeka na timeout magistrali przy żadnym zapytaniu
+    if (_stnId != null && _isCan && _engineHeader != null) {
+      await _setHeader(_engineHeader!);
+      final raw = await _sendCommand("STPX D:0100,R:1");
+      _stpxSupported = ElmParser.parse(raw, _bus).any((r) => r.matches(0x41, [0x00]));
+    }
+
+    // Kilka PIDów w jednym zapytaniu (SAE J1979 na CAN pozwala do 6) — kilkukrotnie
+    // szybsze logowanie. Sprawdzamy na obrotach i prędkości (obsługuje je prawie każde auto).
+    if (_isCan && _supportedPids.contains(0x0C) && _supportedPids.contains(0x0D)) {
+      final r = await _query("010C0D");
+      final data = r.where((e) => e.data.isNotEmpty && e.data[0] == 0x41).firstOrNull;
+      final split = data != null ? ElmParser.splitMultiPid(data.data) : null;
+      _multiPidSupported = split != null && split.containsKey(0x0C) && split.containsKey(0x0D);
+    }
+
     // Ciśnienie atmosferyczne — do przeliczenia MAP na doładowanie względne
     if (_supportedPids.contains(0x33)) {
       final baro = await _readMode01Raw(0x33);
@@ -575,6 +661,17 @@ class ObdService extends ChangeNotifier {
       _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie parametrów producenta (UDS)...");
       await _probeExtendedPids(_vehicleInfo!.profile);
     }
+
+    if (importedPids.isNotEmpty) {
+      _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie zaimportowanych definicji (${importedPids.length})...");
+      await _probeImported();
+    }
+
+    _adapterInfo["Sterownik silnika"] = _engineEcu ?? "—";
+    _adapterInfo["Szybkie zapytania STPX"] = _stpxSupported ? "tak" : "nie";
+    _adapterInfo["Kilka PID-ów w zapytaniu"] = _multiPidSupported ? "tak" : "nie";
+    _adapterInfo["Liczba odpowiedzi (np. 010C1)"] = _responseCountSupported ? "tak" : "nie";
+    _adapterInfo["Obsługiwane PID-y Mode 01"] = "${_supportedPids.length}";
 
     if (!_hasTransport) return false;
     final ecuTxt = _engineEcu != null ? " | ECU $_engineEcu" : "";
@@ -636,13 +733,61 @@ class ObdService extends ChangeNotifier {
       if (ep.kind == UdsValueKind.boostPressure) {
         final scale = _detectPressureScale(raw);
         if (scale == null) continue;
-        _udsPressureScale[ep.requestCommand] = scale;
+        _udsPressureScale["${ep.requestCommand}|${ep.shortName}"] = scale;
       }
       final value = _transform(ep, raw);
       if (value == null || !_isPlausible(ep.shortName, value)) continue;
 
       _discoveredPids.add(ep);
       seen.add(ep.shortName);
+    }
+  }
+
+  /// Definicje zaimportowane przez użytkownika (pliki CSV Torque) — sprawdzane przy
+  /// każdym połączeniu; do logowania trafiają tylko te, na które auto odpowiada.
+  List<ExtendedPid> importedPids = [];
+
+  /// Sprawdza zaimportowane definicje w trakcie połączenia (np. zaraz po imporcie).
+  /// Zwraca liczbę parametrów, które auto obsługuje.
+  Future<int> probeImportedNow() async {
+    if (_status != ObdConnectionStatus.connected) return 0;
+    final before = _discoveredPids.length;
+    await _probeImported();
+    notifyListeners();
+    return _discoveredPids.length - before;
+  }
+
+  Future<void> _probeImported() async {
+    _discoveredPids.removeWhere((p) => p is ExtendedPid && p.profile == VehicleProfile.custom);
+    final seen = _discoveredPids.map((p) => p.shortName).toSet();
+    final groups = <String, List<ExtendedPid>>{};
+    for (final p in importedPids) {
+      groups.putIfAbsent("${p.canHeader ?? ''}|${p.requestCommand}", () => []).add(p);
+    }
+    for (final group in groups.values.take(200)) {
+      if (!_hasTransport) return;
+      final candidates = group.where((p) => !seen.contains(p.shortName)).toList();
+      if (candidates.isEmpty) continue;
+      final payload = await _readPayload(candidates.first);
+      if (payload == null) continue;
+      for (final p in candidates) {
+        final raw = p.decoder(payload);
+        if (!raw.isFinite) continue;
+        if (p.kind == UdsValueKind.boostPressure) {
+          final scale = _detectPressureScale(raw);
+          if (scale == null) continue;
+          _udsPressureScale["${p.requestCommand}|${p.shortName}"] = scale;
+        }
+        final v = _transform(p, raw);
+        if (v == null) continue;
+        final range = (p.maxExpected - p.minExpected).abs();
+        final plausible = p.shortName.startsWith("U_")
+            ? v >= p.minExpected - range - 1 && v <= p.maxExpected + range + 1
+            : _isPlausible(p.shortName, v);
+        if (!plausible) continue;
+        _discoveredPids.add(p);
+        seen.add(p.shortName);
+      }
     }
   }
 
@@ -685,7 +830,7 @@ class ObdService extends ChangeNotifier {
     if (pid is ExtendedPid) {
       switch (pid.kind) {
         case UdsValueKind.boostPressure:
-          final scale = _udsPressureScale[pid.requestCommand];
+          final scale = _udsPressureScale["${pid.requestCommand}|${pid.shortName}"];
           if (scale == null) return null;
           if (scale == 0) return raw;
           return (raw * scale - (_baroKpa ?? 101.3)) / 100.0;
@@ -695,6 +840,8 @@ class ObdService extends ChangeNotifier {
           if (unit == "mbar" || unit == "hpa") return raw / 1000.0;
           if (unit == "mpa") return raw * 10.0;
           return raw;
+        case UdsValueKind.scaled:
+          return raw * pid.scale + pid.offset;
         case UdsValueKind.raw:
           return raw;
       }
@@ -734,7 +881,9 @@ class ObdService extends ChangeNotifier {
     try {
       // Odpowiedzi Mode 06 i PIDy wielowartościowe bywają wieloramkowe —
       // wtedy bez skróconego oczekiwania na liczbę odpowiedzi.
-      final single = service != 0x06 && !pid.hasSupportByte;
+      // Liczba oczekiwanych odpowiedzi tylko dla krótkich odpowiedzi Mode 01 — odpowiedzi
+      // producenta (21xx/22xxxx) bywają wieloramkowe
+      final single = service == 0x01 && !pid.hasSupportByte;
       final responses = await _query(cmd, header: header, singleFrame: single);
       final match = responses.where((r) => r.matches(service + 0x40, id)).firstOrNull;
       if (match == null) return null;
@@ -766,6 +915,37 @@ class ObdService extends ChangeNotifier {
       final key = "${p is ExtendedPid ? p.canHeader ?? '' : ''}|${p.command.toUpperCase()}";
       groups.putIfAbsent(key, () => []).add(p);
     }
+
+    // Standardowe PIDy Mode 01 o znanej długości — pakujemy po 6 w jedno zapytanie
+    if (_multiPidSupported) {
+      final batchable = <int, List<ObdPid>>{};
+      groups.removeWhere((key, group) {
+        final pid = group.first;
+        final n = pid.mode01Pid;
+        if (pid is ExtendedPid || n == null || !ElmParser.mode01DataLength.containsKey(n)) return false;
+        batchable[n] = group;
+        return true;
+      });
+      final numbers = batchable.keys.toList();
+      for (int i = 0; i < numbers.length; i += 6) {
+        if (_status != ObdConnectionStatus.connected) break;
+        final batch = numbers.sublist(i, i + 6 > numbers.length ? numbers.length : i + 6);
+        final split = await _readMultiPid(batch);
+        for (final n in batch) {
+          final payload = split?[n];
+          if (payload == null) {
+            // Sterownik pominął PID albo zapytanie się nie udało — spróbuj pojedynczo
+            if (split == null) groups["|01${n.toRadixString(16).padLeft(2, '0').toUpperCase()}"] = batchable[n]!;
+            continue;
+          }
+          for (final p in batchable[n]!) {
+            final v = _transform(p, p.decoder(payload));
+            if (v != null) result[p.shortName] = v;
+          }
+        }
+      }
+    }
+
     for (final group in groups.values) {
       if (_status != ObdConnectionStatus.connected) break;
       final payload = await _readPayload(group.first);
@@ -779,6 +959,260 @@ class ObdService extends ChangeNotifier {
     final baro = result["BARO"];
     if (baro != null && baro > 50 && baro < 120) _baroKpa = baro;
     return result;
+  }
+
+  Future<Map<int, List<int>>?> _readMultiPid(List<int> pids) async {
+    final cmd = "01${pids.map((n) => n.toRadixString(16).padLeft(2, '0').toUpperCase()).join()}";
+    final responses = await _query(cmd);
+    final data = responses.where((e) => e.data.isNotEmpty && e.data[0] == 0x41).firstOrNull;
+    final split = data != null ? ElmParser.splitMultiPid(data.data) : null;
+    if (split == null || split.isEmpty) {
+      // Po kilku nieudanych próbach wracamy na stałe do pojedynczych zapytań
+      if (++_multiPidFailures >= 3) _multiPidSupported = false;
+      return null;
+    }
+    _multiPidFailures = 0;
+    return split;
+  }
+
+  bool get multiPidEnabled => _multiPidSupported;
+  bool get stpxEnabled => _stpxSupported;
+  String? get stnId => _stnId;
+
+  /// Szczegóły adaptera i wykrytych możliwości (do ekranu informacji i zgłoszeń problemów).
+  Map<String, String> get adapterInfo => Map.unmodifiable(_adapterInfo);
+
+  Future<void> _applyFormatting() async {
+    await _sendCommand("ATL0"); // bez dodatkowych LF
+    await _sendCommand("ATS1"); // spacje między bajtami
+    await _sendCommand("ATH1"); // nagłówki ON — rozróżniamy sterowniki
+    await _sendCommand("ATCAF1"); // automatyczne formatowanie ISO-TP
+    await _sendCommand("ATAT1"); // adaptacyjny timeout
+  }
+
+  // ===========================================================================
+  // Podsłuch magistrali (nauka od innego testera, np. Autel na kablu Y)
+  // ===========================================================================
+
+  /// Czy można włączyć podsłuch (tylko CAN — tam testery rozmawiają z modułami).
+  bool get canMonitor => _status == ObdConnectionStatus.connected && _isCan && !_monitoring;
+
+  /// Włącza cichy podsłuch magistrali: adapter nie wysyła nic na CAN (nawet ACK),
+  /// tylko przekazuje wszystkie ramki, które widzi — np. zapytania Autela do modułów
+  /// i ich odpowiedzi. Każda odebrana linia (nagłówek + bajty) trafia do [onLine].
+  /// Na czas podsłuchu kolejka komend jest wstrzymana (logger i odczyty czekają).
+  Future<bool> startMonitor(void Function(String line) onLine) async {
+    if (!canMonitor) return false;
+    await _sendCommand("ATCSM1"); // cichy nasłuch — bez potwierdzeń ACK na magistrali
+    await _sendCommand("ATCAF0"); // surowe ramki z bajtem PCI (składamy je sami)
+    await _sendCommand("ATH1");
+    await _sendCommand("ATS1");
+    await _sendCommand("ATCRA"); // wszystkie identyfikatory
+
+    final previous = _commandQueue;
+    final hold = Completer<void>();
+    _commandQueue = hold.future;
+    await previous;
+    if (!_hasTransport) {
+      hold.complete();
+      return false;
+    }
+    _monitorHold = hold;
+    _monitorSink = onLine;
+    _monitorStopping = false;
+    _monitorRestarts = 0;
+    _monitorLine.clear();
+    _rx.clear();
+    _monitoring = true;
+    _monitorCmd = _stnId != null ? "STMA" : "ATMA";
+    notifyListeners();
+    await _write(_monitorCmd);
+    return true;
+  }
+
+  /// Ile razy adapter przepełnił bufor i podsłuch był wznawiany (utracone ramki).
+  int get monitorRestarts => _monitorRestarts;
+
+  void _onMonitorRx(List<int> data) {
+    for (final b in data) {
+      if (b == 0) continue;
+      final ch = String.fromCharCode(b);
+      if (ch == '\r' || ch == '\n') {
+        _emitMonitorLine();
+      } else if (ch == '>') {
+        _emitMonitorLine();
+        _onMonitorPrompt();
+      } else {
+        _monitorLine.write(ch);
+      }
+    }
+  }
+
+  void _emitMonitorLine() {
+    final line = _monitorLine.toString().trim();
+    _monitorLine.clear();
+    if (line.isEmpty) return;
+    final upper = line.toUpperCase();
+    // Komunikaty adaptera, nie ramki
+    if (upper == _monitorCmd || upper.contains("BUFFER FULL") || upper.contains("STOPPED") || upper == "?" ||
+        upper.contains("CAN ERROR") || upper.contains("NO DATA") || upper == "OK") {
+      return;
+    }
+    _monitorSink?.call(line);
+  }
+
+  /// Adapter wrócił do znaku zachęty: albo zatrzymaliśmy podsłuch, albo przepełnił się
+  /// jego bufor (BUFFER FULL) — wtedy wznawiamy nasłuch.
+  void _onMonitorPrompt() {
+    if (_monitorStopping) {
+      final c = _monitorStopped;
+      if (c != null && !c.isCompleted) c.complete();
+      return;
+    }
+    _monitorRestarts++;
+    if (_hasTransport) _write(_monitorCmd).catchError((_) {});
+  }
+
+  /// Zatrzymuje podsłuch i przywraca normalną pracę adaptera.
+  Future<void> stopMonitor() async {
+    if (!_monitoring) return;
+    _monitorStopping = true;
+    final stopped = Completer<void>();
+    _monitorStopped = stopped;
+    try {
+      // Dowolny znak przerywa ATMA/STMA
+      await _write("");
+      await stopped.future.timeout(const Duration(seconds: 2), onTimeout: () {});
+    } catch (_) {}
+    _endMonitor();
+    notifyListeners();
+    // Mógł jeszcze przyjść spóźniony znak zachęty
+    _needsDrain = true;
+    await _sendCommand("ATCAF1");
+    await _sendCommand("ATCRA");
+    _activeHeader = null;
+  }
+
+  void _endMonitor() {
+    if (!_monitoring && _monitorHold == null) return;
+    _monitoring = false;
+    _monitorStopping = false;
+    _monitorSink = null;
+    _monitorLine.clear();
+    _rx.clear();
+    final hold = _monitorHold;
+    _monitorHold = null;
+    if (hold != null && !hold.isCompleted) hold.complete();
+    final stopped = _monitorStopped;
+    _monitorStopped = null;
+    if (stopped != null && !stopped.isCompleted) stopped.complete();
+  }
+
+  // ===========================================================================
+  // Skan wszystkich modułów VAG (UDS)
+  // ===========================================================================
+
+  /// Czy można wykonać skan modułów VAG (auto VAG na CAN 11-bit).
+  bool get canScanVagModules =>
+      _status == ObdConnectionStatus.connected &&
+      _bus == ObdBusType.can11 &&
+      _vehicleInfo?.profile == VehicleProfile.vag;
+
+  /// Odczytuje kody błędów ze wszystkich modułów VAG adresowanych przez UDS (usługa 19 02),
+  /// podobnie jak Auto-Scan w VCDS. Moduły, które nie odpowiadają, są pomijane — w autach
+  /// starszych platform (PQ) wiele modułów używa innego protokołu (TP2.0).
+  Future<List<ModuleScanResult>> scanVagModules({
+    void Function(int done, int total, VagModule module)? onProgress,
+    List<VagModule> modules = VagModule.all,
+  }) async {
+    final results = <ModuleScanResult>[];
+    if (!canScanVagModules) return results;
+    try {
+      // Sterowanie przepływem dla długich odpowiedzi (inne adresy niż 7E0/7E8)
+      await _sendCommand("ATFCSD300000");
+      await _sendCommand("ATFCSM1");
+      for (int i = 0; i < modules.length; i++) {
+        if (!_hasTransport) break;
+        final m = modules[i];
+        onProgress?.call(i, modules.length, m);
+        await _sendCommand("ATSH${m.requestId}");
+        _activeHeader = m.requestId;
+        await _sendCommand("ATFCSH${m.requestId}");
+        await _sendCommand("ATCRA${m.responseId}");
+        final raw = await _sendCommand("1902FF", timeout: const Duration(seconds: 3));
+        final resp = ElmParser.parse(raw, _bus).where((r) => r.ecu == m.responseId).firstOrNull;
+        if (resp == null) {
+          results.add(ModuleScanResult(m, responded: false, dtcs: const []));
+          continue;
+        }
+        final dtcs = [
+          for (final (code, ftb, pending) in ElmParser.decodeUdsDtcs(resp.data))
+            DtcCode.getByCode(code, profile: VehicleProfile.vag)
+                .withSource(ecuLabel: "${m.name} (${m.requestId}) • typ usterki ${ftb.toRadixString(16).padLeft(2, '0').toUpperCase()}", pending: pending),
+        ];
+        results.add(ModuleScanResult(m, responded: true, dtcs: dtcs));
+      }
+      if (modules.isNotEmpty) onProgress?.call(modules.length, modules.length, modules.last);
+    } finally {
+      // Przywróć normalny tryb: odbiór wszystkich ramek, domyślne sterowanie przepływem
+      await _sendCommand("ATCRA");
+      await _sendCommand("ATFCSM0");
+      _customFlowControl = false;
+      _activeHeader = null;
+    }
+    return results;
+  }
+
+  /// Odczytuje kody usterek z modułów VAG starszych platform (PQ) przez TP2.0 / KWP2000.
+  /// Adapter jest na czas skanu przełączany na surowy CAN (protokół użytkownika B),
+  /// a potem przywracany do normalnej pracy.
+  Future<List<ModuleScanResult>> scanVagTp20Modules({
+    void Function(int done, int total, String moduleName)? onProgress,
+    List<VagTp20Module> modules = VagTp20Module.all,
+  }) async {
+    final results = <ModuleScanResult>[];
+    if (!canScanVagModules) return results;
+    final tp = Tp20Client((cmd, {timeout = const Duration(seconds: 4)}) => _sendCommand(cmd, timeout: timeout));
+    try {
+      await tp.enterRawMode();
+      for (int i = 0; i < modules.length; i++) {
+        if (!_hasTransport) break;
+        final m = modules[i];
+        onProgress?.call(i, modules.length, m.name);
+        final descriptor = VagModule(m.name, "TP2.0 ${m.addressHex}", m.addressHex, "");
+        bool opened = false;
+        try {
+          opened = await tp.open(m.address);
+          if (!opened) {
+            results.add(ModuleScanResult(descriptor, responded: false, dtcs: const []));
+            continue;
+          }
+          await tp.startSession();
+          final ident = await tp.identification();
+          final faults = await tp.readFaults() ?? const <(int, int)>[];
+          final dtcs = [
+            for (final (code, status) in faults)
+              DtcCode.fromVagFault(code, obdCode: Tp20Client.vagToObdCode(code)).withSource(
+                ecuLabel: "${m.name} (adres ${m.addressHex}, TP2.0) • status ${status.toRadixString(16).padLeft(2, '0').toUpperCase()}",
+              ),
+          ];
+          results.add(ModuleScanResult(descriptor, responded: true, dtcs: dtcs, identification: ident));
+        } on Tp20Exception catch (_) {
+          results.add(ModuleScanResult(descriptor, responded: opened, dtcs: const []));
+        } finally {
+          if (opened) await tp.close();
+        }
+      }
+      if (modules.isNotEmpty) onProgress?.call(modules.length, modules.length, modules.last.name);
+    } finally {
+      // Powrót do normalnej pracy: protokół z autodetekcji, formatowanie, domyślny timeout
+      await _sendCommand("ATSP$_protocolNumber");
+      await _applyFormatting();
+      await _sendCommand("ATST32");
+      await _sendCommand("ATCRA");
+      _activeHeader = null;
+    }
+    return results;
   }
 
   // ===========================================================================
@@ -818,7 +1252,7 @@ class ObdService extends ChangeNotifier {
         for (final code in ElmParser.decodeDtcs(r.data, isCan: _isCan || _bus == ObdBusType.unknown)) {
           final key = "$code@${r.ecu}";
           if (!seen.add(key)) continue; // oczekujący, który jest już zapisany
-          result.add(DtcCode.getByCode(code).withSource(ecuLabel: _ecuLabel(r.ecu), pending: pending));
+          result.add(DtcCode.getByCode(code, profile: _vehicleInfo?.profile).withSource(ecuLabel: _ecuLabel(r.ecu), pending: pending));
         }
       }
       if (mode == "03" && !anyValidResponse) return null;
@@ -896,4 +1330,16 @@ class ObdService extends ChangeNotifier {
     _scanSub?.cancel();
     super.dispose();
   }
+}
+
+/// Wynik odczytu jednego modułu podczas skanu VAG.
+class ModuleScanResult {
+  final VagModule module;
+  final bool responded;
+  final List<DtcCode> dtcs;
+
+  /// Identyfikacja modułu (TP2.0: numer części i nazwa), jeśli dostępna.
+  final String? identification;
+
+  const ModuleScanResult(this.module, {required this.responded, required this.dtcs, this.identification});
 }

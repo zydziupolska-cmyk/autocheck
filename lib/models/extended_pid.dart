@@ -9,6 +9,9 @@ enum VehicleProfile {
   bmw,
   fca,
   psa,
+
+  /// Definicje zaimportowane przez użytkownika (pliki CSV Torque) — dla dowolnego auta.
+  custom,
 }
 
 /// Jak interpretować wartość parametru producenta.
@@ -22,6 +25,9 @@ enum UdsValueKind {
 
   /// Ciśnienie paliwa: przeliczane na bar według jednostki z tabeli.
   railPressure,
+
+  /// Wartość z importu CSV już przeliczona na jednostkę kanału (współczynnik [ExtendedPid.scale]).
+  scaled,
 }
 
 /// Rozszerzony PID, który wykorzystuje specyficzne dla producenta komendy (np. Mode 22, UDS)
@@ -38,11 +44,25 @@ class ExtendedPid extends ObdPid {
 
   final UdsValueKind kind;
 
+  /// Współczynnik i przesunięcie dla [UdsValueKind.scaled] (np. °F → °C, mbar → kPa).
+  final double scale;
+  final double offset;
+
+  /// Nazwa pliku, z którego pochodzi definicja (import użytkownika).
+  final String? source;
+
+  /// Oryginalna nazwa z pliku definicji.
+  final String? originalName;
+
   const ExtendedPid({
     required this.profile,
     required this.requestCommand,
     this.canHeader,
     this.kind = UdsValueKind.raw,
+    this.scale = 1,
+    this.offset = 0,
+    this.source,
+    this.originalName,
     required super.code,
     required super.shortName,
     required super.name,

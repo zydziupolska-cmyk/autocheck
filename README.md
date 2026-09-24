@@ -82,10 +82,35 @@ są sprawdzane pod kątem pozytywnej odpowiedzi (`62`) i wiarygodności wartośc
 ciśnienia doładowania z UDS (kPa / hPa / bar) jest wykrywana automatycznie po wartości
 atmosferycznej. Tabele producentów są generowane z plików CSV (`scripts/generate_pids.py`).
 
+### Dowolne auto: import definicji w formacie Torque (CSV)
+
+Standardowe parametry OBD-II działają w każdym aucie. Parametrów producenta (korekty
+wtryskiwaczy, zadane doładowanie w benzynie, parametry BMS aut elektrycznych…) nie da się
+obsłużyć uniwersalnie — każdy producent i sterownik ma inne identyfikatory. Dlatego aplikacja
+importuje pliki w formacie Torque Pro (`Name, ShortName, ModeAndPID, Equation, Min, Max,
+Units, Header`), dla którego społeczność ma gotowe definicje dla setek modeli
+(Czujniki → „Importuj plik CSV”).
+
+- Interpreter równań Torque (`lib/services/torque_equation.dart`): zmienne `A`…`Z`, `AA`…,
+  `SIGNED()`, `INT16/24/32()`, `BIT()`, `{A:n}`, `<`/`>` (przesunięcia), `& |`, `ABS`,
+  `MAX`, `MIN`, `AVG`; tolerancja typowych literówek (nadmiarowe nawiasy). Pola `val{…}`
+  (wyliczane z innych parametrów) są pomijane.
+- Parametry rozpoznawane po nazwie (angielskiej, polskiej, niemieckiej) trafiają do kanałów
+  analizatora z przeliczeniem jednostek: doładowanie zadane/rzeczywiste, szyna paliwa,
+  korekty wtryskiwaczy `INJ_CORR_n`, stuk `KNOCK_n`, DPF, EGT, VGT, EGR, lambda. Pozostałe
+  są logowane pod własną nazwą (`U_…`).
+- Przy każdym połączeniu definicje są sprawdzane — do logowania trafiają tylko te, na które
+  auto odpowiada wiarygodną wartością. Standard OBD-II ma pierwszeństwo.
+
+Korekty wtryskiwaczy są dla Asystenta najmocniejszym wskazaniem cylindra (przed licznikami
+wypadania zapłonów i kodami P030x).
+
 ### Harmonogram odpytywania
 
 Kanały z tego samego zapytania (np. zadane i rzeczywiste doładowanie z PID 70) kosztują jedno
-zapytanie. Szybkie kanały (obroty, pedał, doładowanie, MAF, szyna) są odczytywane w każdym
+zapytanie. Na CAN standardowe PID-y są pakowane po 6 w jedno zapytanie (SAE J1979), jeśli
+sterownik to obsługuje — sprawdzane przy połączeniu, z automatycznym powrotem do pojedynczych
+zapytań. Szybkie kanały (obroty, pedał, doładowanie, MAF, szyna) są odczytywane w każdym
 cyklu, normalne co 2 cykle, wolne (temperatury, liczniki wypadania zapłonów) co 8 cykli, a
 podczas przyspieszenia wolne kanały czekają. Jeśli adapter to obsługuje, zapytania mają
 dopisaną liczbę odpowiedzi (`010C1`), więc adapter nie czeka na timeout magistrali.
@@ -126,8 +151,23 @@ z tym samym silnikiem w chwilach, gdy doładowanie było prawidłowe — bez zna
 silnika. Każdy wniosek ma krótkie podsumowanie prostym językiem („co to znaczy”), odczyty
 pozostałych czujników, wykluczone przyczyny i zalecenia.
 
-Pozostałe analizy: ciśnienie paliwa zadane vs rzeczywiste (zasilanie pod obciążeniem vs
-nieszczelność/przelewy), nadążanie VGT/wastegate/EGR za sterownikiem, zapełnienie DPF z całej
+**Ciśnienie paliwa.** Porównywane osobno na wolnych obrotach i pod obciążeniem (z wartością
+zadaną, a gdy jej brak — z typowymi wartościami dla wtrysku bezpośredniego; wtrysk pośredni
+jest rozpoznawany i pomijany). Spadek tylko na jałowym + ujemne korekty paliwa = lejący
+wtryskiwacz (paliwo trafia do cylindra poza kontrolą sterownika); spadek pod obciążeniem =
+zasilanie (filtr, pompy). Numer cylindra podawany jest wyłącznie na podstawie danych:
+przyrostu licznika wypadania zapłonów (Mode 06) albo kodu P030x — bez nich Asystent mówi
+wprost, że cylindra nie da się ustalić.
+
+**Kody błędów.** Po zakończeniu logu aplikacja odczytuje kody (Mode 03 + 07) i zapisuje je
+w sesji. Asystent używa ich jako dowodów (np. P0299 potwierdza niedoładowanie, gdy sterownik
+nie podaje zadanego ciśnienia; P2002/P2463 wzmacniają DPF; P030x wskazuje cylinder). Kod,
+którego log nie potwierdza, dostaje osobny wpis z opisem i informacją, co nagrać.
+
+**Zapieczona geometria turbiny** jest rozpoznawana także bez czujnika pozycji VGT: przeładowanie
+na niskich obrotach i brak ciśnienia na wysokich w tym samym przyspieszeniu.
+
+Pozostałe analizy: nadążanie VGT/wastegate/EGR za sterownikiem, zapełnienie DPF z całej
 jazdy (różnica ciśnień względem przepływu), ograniczanie momentu, przeładowanie turbo,
 a także reguły z `AnomalyEngine`: cofanie zapłonu, skład mieszanki, leniwa sonda lambda,
 wypadanie zapłonów (przyrost licznika Mode 06 + korekty paliwa → brak paliwa vs brak iskry),
@@ -140,6 +180,41 @@ ocenić (np. brak przyspieszenia, brak zadanego doładowania).
 Mode 03 (zapisane) i Mode 07 (oczekujące) ze wszystkich sterowników, z oznaczeniem źródła
 (np. „Silnik (7E8)”). Na CAN po bajcie `43` pomijany jest licznik kodów, w protokołach
 starszych — nie. Mode 04 kasuje kody po potwierdzeniu; aplikacja sprawdza odpowiedź `44`.
+
+### Opisy kodów i skan modułów VAG
+
+- `assets/dtc/obd_descriptions_en.json` — ok. 4500 opisów kodów (angielskie, wersja VAG) z biblioteki
+  [KLineKWP1281Lib](https://github.com/domnulvlad/KLineKWP1281Lib). Polska baza z przyczynami ma
+  pierwszeństwo. Kody standardowe SAE (P0xxx, P2xxx, U0xxx…) są opisywane w każdym aucie (bez numerów
+  części VAG w innych markach), kody producenta (P1xxx, U1xxx…) — tylko w autach VAG, bo w innych
+  markach znaczą co innego.
+- `lib/models/vag_modules.dart` — adresy UDS 88 modułów VAG (tabela „VAG UDS IDs”,
+  [ConnorHowell/vag-uds-ids](https://github.com/ConnorHowell/vag-uds-ids)). Na ekranie
+  Połączenie, dla aut VAG na CAN, przycisk „Skanuj wszystkie moduły” odczytuje kody błędów z każdego
+  modułu usługą UDS 19 02 (jak Auto-Scan). Działa z modułami UDS (MQB, MLB i nowsze); starsze moduły
+  (PQ, TP2.0) nie odpowiadają i są pomijane.
+
+### Adaptery STN (vLinker, OBDLink)
+
+vLinker MC+ przyjmuje komendy ELM327 (AT), STN (ST) i własne makra VT — nie ma osobnego
+„trybu natywnego”. Aplikacja przy połączeniu pyta o `STI`/`STDI`; jeśli adapter ma układ STN,
+sprawdza i używa `STPX D:<dane>,R:1` (składnia jak w ddt4all), dzięki czemu adapter kończy
+zapytanie po pierwszej odpowiedzi także dla odpowiedzi wieloramkowych. Protokół (`ATSP0`) jest
+ustawiany przed formatowaniem, a formatowanie jest ponawiane po wyszukaniu protokołu — niektóre
+adaptery (np. vLinker FS) resetują nagłówki po `ATSP`. Szczegóły adaptera: ekran Połączenie →
+„Szczegóły adaptera” (z kopiowaniem).
+
+### VAG TP2.0 (starsze platformy PQ)
+
+`lib/services/vag_tp20.dart` — moduły VAG starszych platform (Touran 1T, Golf V/VI, Passat
+B6/B7, Octavia II, Rapid…) rozmawiają KWP2000 przez TP2.0, a nie UDS. Adapter jest na czas skanu
+przełączany na surowy CAN 11-bit 500 kbps (`AT PB C0 01`, `AT SP B`), aplikacja otwiera kanał
+(`<adres> C0 00 10 00 03 01` na 0x200), ustawia parametry (`A0 0F 8A FF 4A FF`), obsługuje
+pakiety i potwierdzenia, sesję `10 89`, identyfikację `1A 9B` i odczyt kodów `18 02 FF 00`.
+Schemat za [jazdw/vag-blocks](https://github.com/jazdw/vag-blocks) i [jazdw.net/tp20](https://jazdw.net/tp20).
+Kody 5-cyfrowe VAG mają opisy z `assets/dtc/vag_fault_codes_en.json`; kody 16384+ to
+zakodowane kody P (np. 16684 = P0300). Przycisk „Skanuj wszystkie moduły (VAG)” wykonuje skan
+UDS i TP2.0 i łączy wyniki.
 
 ## Testy
 

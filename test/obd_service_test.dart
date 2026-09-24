@@ -316,4 +316,104 @@ void main() {
     expect(dpf, hasLength(1), reason: logger.detectedAnomalies.map((a) => "${a.id}: ${a.title}").join("\n"));
     expect(dpf.single.plainSummary, contains("DPF"));
   });
+
+  group('kilka PIDów w jednym zapytaniu', () {
+    test('odczyt 6 kanałów = 1 zapytanie zamiast 6, wartości identyczne', () async {
+      await connect();
+      expect(obd.multiPidEnabled, isTrue);
+      final keys = ["RPM", "SPEED", "LOAD", "MAF", "IAT", "ECT"];
+      final pids = [for (final k in keys) obd.discoveredPids.firstWhere((p) => p.shortName == k)];
+      final before = elm.receivedCommands.length;
+      final values = await obd.readPids(pids);
+      final sent = elm.receivedCommands.sublist(before).where((c) => c.startsWith("01")).toList();
+      expect(sent, hasLength(1), reason: sent.join(", "));
+      expect(values["RPM"], closeTo(850, 0.01));
+      expect(values["SPEED"], 0);
+      expect(values["ECT"], 90);
+      expect(values["IAT"], 20);
+      expect(values["MAF"], closeTo(5.0, 0.01));
+    });
+
+    test('PIDy wieloramkowe (70, 6D) też w pakiecie', () async {
+      await connect();
+      elm
+        ..targetKpa = 239
+        ..mapKpa = 159;
+      final pids = obd.discoveredPids.where((p) => ["RPM", "BOOST", "TARGET_BOOST", "F_RAIL", "RAIL_TGT", "PEDAL"].contains(p.shortName)).toList();
+      final before = elm.receivedCommands.length;
+      final values = await obd.readPids(pids);
+      expect(elm.receivedCommands.sublist(before).where((c) => c.startsWith("01")), hasLength(1));
+      expect(values["TARGET_BOOST"], closeTo(1.40, 0.01));
+      expect(values["BOOST"], closeTo(0.60, 0.01));
+      expect(values["RAIL_TGT"], closeTo(300, 0.1));
+      expect(values["F_RAIL"], closeTo(298, 0.1));
+    });
+
+    test('sterownik bez obsługi — pojedyncze zapytania jak dotąd', () async {
+      elm.multiPidSupported = false;
+      await connect();
+      expect(obd.multiPidEnabled, isFalse);
+      final pids = [for (final k in ["RPM", "SPEED"]) obd.discoveredPids.firstWhere((p) => p.shortName == k)];
+      final values = await obd.readPids(pids);
+      expect(values["RPM"], closeTo(850, 0.01));
+      expect(values["SPEED"], 0);
+    });
+
+    test('KWP (bez CAN) — pojedyncze zapytania', () async {
+      final car = await MockElm327.start(bus: MockBus.kwp);
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      expect(await service.connectWifi(ip: "127.0.0.1", port: car.port), isTrue);
+      expect(service.multiPidEnabled, isFalse);
+    });
+  });
+
+  group('adapter STN (vLinker, OBDLink)', () {
+    test('wykrywa STN i używa STPX — także dla odpowiedzi wieloramkowych', () async {
+      final car = await MockElm327.start(stn: true);
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      expect(await service.connectWifi(ip: "127.0.0.1", port: car.port), isTrue, reason: service.statusMessage);
+      expect(service.stnId, "STN2255 v5.10.3");
+      expect(service.stpxEnabled, isTrue);
+      expect(service.adapterInfo["STDI (sprzęt)"], "vLinker MC+ (emulator)");
+
+      car.targetKpa = 239;
+      car.mapKpa = 159;
+      final before = car.receivedCommands.length;
+      final v = await service.readPids(service.discoveredPids.where((p) => ["RPM", "BOOST", "TARGET_BOOST"].contains(p.shortName)).toList());
+      final sent = car.receivedCommands.sublist(before);
+      expect(sent.every((c) => c.startsWith("STPX") || c.startsWith("AT")), isTrue, reason: sent.join(", "));
+      expect(v["RPM"], closeTo(850, 0.01));
+      expect(v["TARGET_BOOST"], closeTo(1.40, 0.01));
+      // VIN (wieloramkowy) przez STPX też poprawny
+      expect(service.vehicleInfo!.vin, MockElm327.vin);
+    });
+
+    test('zwykły ELM327: STI → „?”, bez STPX', () async {
+      await connect();
+      expect(obd.stnId, isNull);
+      expect(obd.stpxEnabled, isFalse);
+      expect(obd.adapterInfo["STI (układ STN)"], contains("zwykły ELM327"));
+    });
+
+    test('adapter resetujący formatowanie po ATSP (jak vLinker FS): nagłówki nadal działają, brak fikcyjnego C0300', () async {
+      final car = await MockElm327.start(resetsFormattingOnProtocol: true);
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      expect(await service.connectWifi(ip: "127.0.0.1", port: car.port), isTrue, reason: service.statusMessage);
+      expect(service.engineEcuAddress, "7E8");
+      expect(await service.readDtcCodes(), isEmpty);
+      expect(service.vehicleInfo!.ecuName, "ECM-EngineControl");
+    });
+  });
 }

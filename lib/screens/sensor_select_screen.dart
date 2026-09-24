@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'dart:convert';
+import 'package:file_picker/file_picker.dart';
 import '../models/extended_pid.dart';
+import '../services/pid_definitions_store.dart';
 import '../models/obd_pid.dart';
 import '../services/datalogger_service.dart';
 import '../services/obd_service.dart';
@@ -43,6 +46,11 @@ class SensorSelectScreen extends StatelessWidget {
           children: [
             // Podsumowanie wyboru i szacowany FPS
             _buildSamplingInfoCard(logger.selectedPidKeys.length),
+
+            const SizedBox(height: 16),
+
+            // Import definicji parametrów producenta (dowolne auto)
+            const _DefinitionsImportCard(),
 
             const SizedBox(height: 16),
 
@@ -135,7 +143,7 @@ class SensorSelectScreen extends StatelessWidget {
                       ),
                     ),
                     subtitle: Text(
-                      "${pid is ExtendedPid ? 'UDS producenta ${pid.requestCommand}' : 'OBD-II ${pid.code}'} | ${pid.unit} | ${_rateLabel(pid.rate)}",
+                      "${pid is ExtendedPid ? (pid.source != null ? 'Import: ${pid.source} (${pid.requestCommand})' : 'UDS producenta ${pid.requestCommand}') : 'OBD-II ${pid.code}'} | ${pid.unit} | ${_rateLabel(pid.rate)}",
                       style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
                     ),
                     trailing: Switch(
@@ -241,6 +249,148 @@ class SensorSelectScreen extends StatelessWidget {
           ),
         );
       }).toList(),
+    );
+  }
+}
+
+/// Import plików z definicjami parametrów producenta (format Torque CSV).
+class _DefinitionsImportCard extends StatefulWidget {
+  const _DefinitionsImportCard();
+
+  @override
+  State<_DefinitionsImportCard> createState() => _DefinitionsImportCardState();
+}
+
+class _DefinitionsImportCardState extends State<_DefinitionsImportCard> {
+  bool _busy = false;
+
+  Future<void> _import() async {
+    final store = context.read<PidDefinitionsStore>();
+    final obd = context.read<ObdService>();
+    List<PlatformFile> picked;
+    try {
+      picked = await FilePicker.pickFiles(dialogTitle: "Wybierz plik CSV z definicjami (Torque)");
+    } catch (e) {
+      _snack("Nie udało się otworzyć wyboru pliku: $e");
+      return;
+    }
+    if (picked.isEmpty || !mounted) return;
+
+    setState(() => _busy = true);
+    final lines = <String>[];
+    try {
+      for (final f in picked) {
+        final bytes = await f.readAsBytes();
+        String content;
+        try {
+          content = utf8.decode(bytes);
+        } catch (_) {
+          content = latin1.decode(bytes);
+        }
+        final r = await store.importCsv(f.name, content);
+        lines.add("${f.name}: wczytano ${r.pids.length} definicji${r.skipped.isNotEmpty ? ', pominięto ${r.skipped.length}' : ''}.");
+        for (final s in r.skipped.take(5)) {
+          lines.add("  • $s");
+        }
+      }
+      if (obd.status == ObdConnectionStatus.connected) {
+        final added = await obd.probeImportedNow();
+        lines.add("");
+        lines.add("Twoje auto odpowiada na $added z nich — zostały dodane do listy czujników.");
+      } else {
+        lines.add("");
+        lines.add("Po połączeniu z autem aplikacja sprawdzi, które z tych parametrów sterownik obsługuje.");
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Text("Import definicji", style: TextStyle(color: AppTheme.textPrimary)),
+        content: SingleChildScrollView(
+          child: Text(lines.join("\n"), style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+      ),
+    );
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: AppTheme.red));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final store = context.watch<PidDefinitionsStore>();
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.library_add, color: AppTheme.cyan, size: 20),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  "Parametry producenta (import)",
+                  style: TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            "Standardowe parametry OBD-II działają w każdym aucie. Parametry producenta (np. korekty wtryskiwaczy, "
+            "zadane doładowanie w benzynie) można dodać z pliku CSV w formacie Torque — gotowe pliki dla wielu "
+            "modeli udostępnia społeczność. Aplikacja sama sprawdzi, które z nich obsługuje Twoje auto.",
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          for (final entry in store.files.entries)
+            Row(
+              children: [
+                const Icon(Icons.description, color: AppTheme.textMuted, size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    "${entry.key} (${entry.value.pids.length})",
+                    style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, color: AppTheme.textMuted, size: 18),
+                  tooltip: "Usuń",
+                  onPressed: () => store.remove(entry.key),
+                ),
+              ],
+            ),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _busy ? null : _import,
+              icon: _busy
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.upload_file),
+              label: const Text("Importuj plik CSV (Torque)"),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppTheme.cyan,
+                side: const BorderSide(color: AppTheme.cyan),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
