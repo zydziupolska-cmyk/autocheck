@@ -188,7 +188,8 @@ starszych — nie. Mode 04 kasuje kody po potwierdzeniu; aplikacja sprawdza odpo
   pierwszeństwo. Kody standardowe SAE (P0xxx, P2xxx, U0xxx…) są opisywane w każdym aucie (bez numerów
   części VAG w innych markach), kody producenta (P1xxx, U1xxx…) — tylko w autach VAG, bo w innych
   markach znaczą co innego.
-- `lib/models/vag_modules.dart` — adresy UDS 88 modułów VAG (tabela „VAG UDS IDs”). Na ekranie
+- `lib/models/vag_modules.dart` — adresy UDS 88 modułów VAG (tabela „VAG UDS IDs”,
+  [ConnorHowell/vag-uds-ids](https://github.com/ConnorHowell/vag-uds-ids)). Na ekranie
   Połączenie, dla aut VAG na CAN, przycisk „Skanuj wszystkie moduły” odczytuje kody błędów z każdego
   modułu usługą UDS 19 02 (jak Auto-Scan). Działa z modułami UDS (MQB, MLB i nowsze); starsze moduły
   (PQ, TP2.0) nie odpowiadają i są pomijane.

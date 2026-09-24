@@ -1,7 +1,7 @@
 /// Moduły (sterowniki) grupy VAG adresowane przez UDS na CAN 11-bit.
 ///
-/// Adresy z tabeli „VAG UDS IDs” (docs/vag_uds_can_ids.md w repozytorium
-/// audi-vcds/vcds-audi-diagnostic-suite, dane pierwotnie z ODIS). Dotyczą aut
+/// Adresy z tabeli „VAG UDS IDs” autorstwa Connora Howella
+/// (github.com/ConnorHowell/vag-uds-ids, dane wyciągnięte z ODIS). Dotyczą aut
 /// z modułami UDS (platformy MQB, MLB i nowsze). Starsze moduły (PQ, TP2.0 /
 /// KWP2000) na te adresy nie odpowiadają.
 class VagModule {
