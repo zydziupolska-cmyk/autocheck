@@ -313,6 +313,7 @@ class ObdService extends ChangeNotifier {
       _responseCountSupported = false;
       _supportedPids = {};
       _supportedMode06 = {};
+      _udsPressureScale.clear();
       _baroKpa = null;
       _adapterId = "";
       _protocolName = "";
@@ -564,13 +565,14 @@ class ObdService extends ChangeNotifier {
       if (baro != null && baro.isNotEmpty && baro[0] > 50) _baroKpa = baro[0].toDouble();
     }
 
-    _rebuildDiscoveredPids();
-
     _updateStatus(ObdConnectionStatus.initializing, "Odczyt danych pojazdu (VIN, sterownik)...");
     await readVehicleInfo();
 
+    _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie parametrów zadanych i rzeczywistych...");
+    await _discoverChannels();
+
     if (_vehicleInfo != null && _vehicleInfo!.profile != VehicleProfile.generic) {
-      _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie parametrów producenta...");
+      _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie parametrów producenta (UDS)...");
       await _probeExtendedPids(_vehicleInfo!.profile);
     }
 
@@ -578,41 +580,130 @@ class ObdService extends ChangeNotifier {
     final ecuTxt = _engineEcu != null ? " | ECU $_engineEcu" : "";
     _updateStatus(
       ObdConnectionStatus.connected,
-      "Połączono ($transportLabel) • ${_discoveredPids.length} czujników$ecuTxt | ${_vehicleInfo?.modelName ?? 'Pojazd'}",
+      "Połączono ($transportLabel) • ${_discoveredPids.length} parametrów$ecuTxt | ${_vehicleInfo?.modelName ?? 'Pojazd'}",
     );
     return true;
   }
 
-  void _rebuildDiscoveredPids() {
+  bool _isSupportedByMask(ObdPid pid) {
+    final mid = pid.mode06Mid;
+    if (mid != null) return _supportedMode06.contains(mid);
+    final n = pid.mode01Pid;
+    if (n == null) return false;
+    return _supportedPids.isEmpty || _supportedPids.contains(n);
+  }
+
+  /// Wybiera źródło każdego kanału. Dla kanałów z kilkoma możliwymi PIDami
+  /// (np. BOOST: 70 → 87 → 0B) bierze pierwszy, który ECU obsługuje. PIDy
+  /// wielowartościowe są odczytywane raz, żeby sprawdzić bity obsługi —
+  /// np. PID 70 może podawać rzeczywiste doładowanie, ale nie zadane.
+  Future<void> _discoverChannels() async {
+    final rawCache = <String, List<int>?>{};
     final list = <ObdPid>[];
     final seen = <String>{};
+
     for (final pid in ObdPid.standardPids) {
-      final mid = pid.mode06Mid;
-      if (mid != null) {
-        if (_supportedMode06.contains(mid) && seen.add(pid.shortName)) list.add(pid);
-        continue;
+      if (seen.contains(pid.shortName) || !_isSupportedByMask(pid)) continue;
+      if (pid.hasSupportByte) {
+        if (!rawCache.containsKey(pid.code)) {
+          rawCache[pid.code] = await _readPayload(pid);
+        }
+        final raw = rawCache[pid.code];
+        if (raw == null || !pid.decoder(raw).isFinite) continue;
       }
-      final n = pid.mode01Pid;
-      if (n == null) continue;
-      if (_supportedPids.isNotEmpty && !_supportedPids.contains(n)) continue;
-      if (!seen.add(pid.shortName)) continue;
+      seen.add(pid.shortName);
       list.add(pid);
     }
     _discoveredPids = list;
   }
 
+  /// Parametry producenta (UDS / Mode 22) — uzupełniają kanały, których nie ma
+  /// w standardzie OBD-II (np. zadane doładowanie w benzynie). Każdy jest
+  /// sprawdzany: odpowiedź pozytywna (62), wiarygodna wartość po przeliczeniu.
   Future<void> _probeExtendedPids(VehicleProfile profile) async {
     if (_bus != ObdBusType.can11) return;
     final seen = _discoveredPids.map((p) => p.shortName).toSet();
-    for (final ep in ExtendedPid.getForProfile(profile)) {
+    for (final ep in ExtendedPid.channelsFor(profile)) {
       if (!_hasTransport) return;
-      if (seen.contains(ep.shortName)) continue;
+      if (seen.contains(ep.shortName)) continue; // standard OBD-II ma pierwszeństwo
       if (ep.canHeader != null && ep.canHeader!.length != 3) continue;
-      final v = await _readPidInternal(ep);
-      if (v != null) {
-        _discoveredPids.add(ep);
-        seen.add(ep.shortName);
+
+      final payload = await _readPayload(ep);
+      if (payload == null) continue;
+      final raw = ep.decoder(payload);
+      if (!raw.isFinite) continue;
+
+      if (ep.kind == UdsValueKind.boostPressure) {
+        final scale = _detectPressureScale(raw);
+        if (scale == null) continue;
+        _udsPressureScale[ep.requestCommand] = scale;
       }
+      final value = _transform(ep, raw);
+      if (value == null || !_isPlausible(ep.shortName, value)) continue;
+
+      _discoveredPids.add(ep);
+      seen.add(ep.shortName);
+    }
+  }
+
+  /// Skala ciśnienia doładowania z UDS wykrywana przy połączeniu (silnik stoi lub
+  /// pracuje na jałowym, więc ciśnienie ≈ atmosferyczne): wartość × skala = kPa
+  /// bezwzględne. 0 oznacza, że ECU podaje już nadciśnienie w bar.
+  final Map<String, double> _udsPressureScale = {};
+
+  static double? _detectPressureScale(double v) {
+    for (final scale in [1.0, 0.1, 100.0, 0.01]) {
+      final kpa = v * scale;
+      if (kpa >= 60 && kpa <= 140) return scale;
+    }
+    if (v.abs() <= 0.4) return 0; // już względne, w bar
+    return null;
+  }
+
+  static bool _isPlausible(String key, double v) {
+    switch (key) {
+      case "BOOST":
+      case "TARGET_BOOST":
+        return v >= -1.0 && v <= 3.5;
+      case "F_RAIL":
+      case "RAIL_TGT":
+        return v >= 0 && v <= 3000;
+      case "LAMBDA":
+      case "LAMBDA_CMD":
+        return v >= 0.5 && v <= 15;
+      case "IGN":
+        return v >= -30 && v <= 70;
+      case "EGT":
+        return v >= -40 && v <= 1200;
+      default:
+        return v.abs() < 1e6;
+    }
+  }
+
+  double? _transform(ObdPid pid, double raw) {
+    if (!raw.isFinite) return null;
+    if (pid is ExtendedPid) {
+      switch (pid.kind) {
+        case UdsValueKind.boostPressure:
+          final scale = _udsPressureScale[pid.requestCommand];
+          if (scale == null) return null;
+          if (scale == 0) return raw;
+          return (raw * scale - (_baroKpa ?? 101.3)) / 100.0;
+        case UdsValueKind.railPressure:
+          final unit = ExtendedPid.rawUnitOf(pid).toLowerCase();
+          if (unit == "kpa") return raw / 100.0;
+          if (unit == "mbar" || unit == "hpa") return raw / 1000.0;
+          if (unit == "mpa") return raw * 10.0;
+          return raw;
+        case UdsValueKind.raw:
+          return raw;
+      }
+    }
+    switch (pid.transform) {
+      case ValueTransform.absKpaToRelBar:
+        return (raw - (_baroKpa ?? 101.3)) / 100.0;
+      case ValueTransform.none:
+        return raw;
     }
   }
 
@@ -627,24 +718,12 @@ class ObdService extends ChangeNotifier {
     return match?.data.sublist(2);
   }
 
-  /// Odczytuje wartość czujnika. Zwraca null, gdy ECU nie odpowiedziało
-  /// poprawnie — taka próbka jest pomijana zamiast zapisywać fałszywe 0.
-  Future<double?> readPid(ObdPid pid) async {
-    if (_status != ObdConnectionStatus.connected) return null;
-    return _readPidInternal(pid);
-  }
-
-  Future<double?> _readPidInternal(ObdPid pid) async {
+  /// Wysyła zapytanie danego PIDu i zwraca bajty danych (bez usługi i numeru PID),
+  /// albo null, gdy ECU nie odpowiedziało poprawnie.
+  Future<List<int>?> _readPayload(ObdPid pid) async {
     if (!_hasTransport) return null;
-
-    String cmd;
-    String? header;
-    if (pid is ExtendedPid) {
-      cmd = pid.requestCommand.toUpperCase();
-      header = pid.canHeader;
-    } else {
-      cmd = pid.code.toUpperCase();
-    }
+    final cmd = pid.command.toUpperCase();
+    final header = pid is ExtendedPid ? pid.canHeader : null;
     if (cmd.length < 4 || cmd.length.isOdd || !RegExp(r'^[0-9A-F]+$').hasMatch(cmd)) return null;
 
     final service = int.parse(cmd.substring(0, 2), radix: 16);
@@ -653,25 +732,53 @@ class ObdService extends ChangeNotifier {
     ];
 
     try {
-      // Odpowiedzi Mode 06 bywają wieloramkowe — bez skróconego oczekiwania
-      final responses = await _query(cmd, header: header, singleFrame: service != 0x06);
+      // Odpowiedzi Mode 06 i PIDy wielowartościowe bywają wieloramkowe —
+      // wtedy bez skróconego oczekiwania na liczbę odpowiedzi.
+      final single = service != 0x06 && !pid.hasSupportByte;
+      final responses = await _query(cmd, header: header, singleFrame: single);
       final match = responses.where((r) => r.matches(service + 0x40, id)).firstOrNull;
       if (match == null) return null;
-
       // Mode 06: rekordy testów zaczynają się od MID, więc zostawiamy go w danych
       final payload = service == 0x06 ? match.data.sublist(1) : match.data.sublist(1 + id.length);
-      if (payload.isEmpty) return null;
-      var value = pid.decoder(payload);
-
-      // Dekoder BOOST liczy (MAP - 100 kPa); korygujemy o zmierzone ciśnienie atmosferyczne
-      if (pid is! ExtendedPid && pid.shortName == "BOOST" && _baroKpa != null) {
-        value += (100.0 - _baroKpa!) / 100.0;
-      }
-      if (!value.isFinite) return null;
-      return value;
+      return payload.isEmpty ? null : payload;
     } catch (_) {
       return null;
     }
+  }
+
+  /// Odczytuje wartość czujnika. Zwraca null, gdy ECU nie odpowiedziało
+  /// poprawnie — taka próbka jest pomijana zamiast zapisywać fałszywe 0.
+  Future<double?> readPid(ObdPid pid) async {
+    if (_status != ObdConnectionStatus.connected) return null;
+    final payload = await _readPayload(pid);
+    if (payload == null) return null;
+    return _transform(pid, pid.decoder(payload));
+  }
+
+  /// Odczytuje kilka kanałów naraz. Kanały dzielące to samo zapytanie
+  /// (np. zadane i rzeczywiste doładowanie z PID 70) kosztują jedno zapytanie.
+  Future<Map<String, double>> readPids(List<ObdPid> pids) async {
+    final result = <String, double>{};
+    if (_status != ObdConnectionStatus.connected) return result;
+
+    final groups = <String, List<ObdPid>>{};
+    for (final p in pids) {
+      final key = "${p is ExtendedPid ? p.canHeader ?? '' : ''}|${p.command.toUpperCase()}";
+      groups.putIfAbsent(key, () => []).add(p);
+    }
+    for (final group in groups.values) {
+      if (_status != ObdConnectionStatus.connected) break;
+      final payload = await _readPayload(group.first);
+      if (payload == null) continue;
+      for (final p in group) {
+        final v = _transform(p, p.decoder(payload));
+        if (v != null) result[p.shortName] = v;
+      }
+    }
+    // Aktualne ciśnienie atmosferyczne poprawia przeliczanie doładowania
+    final baro = result["BARO"];
+    if (baro != null && baro > 50 && baro < 120) _baroKpa = baro;
+    return result;
   }
 
   // ===========================================================================

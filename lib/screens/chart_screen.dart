@@ -18,7 +18,7 @@ class ChartScreen extends StatefulWidget {
 
 class _ChartScreenState extends State<ChartScreen> {
   // Włączone linie na wykresie
-  final Set<String> _visibleChannels = {"RPM", "BOOST", "PEDAL", "IGN", "AFR", "F_RAIL", "STFT", "MAF"};
+  final Set<String> _visibleChannels = {"RPM", "BOOST", "TARGET_BOOST", "PEDAL", "MAF", "DPF_DP", "IGN"};
 
   // Aktualnie wskazany punkt dotykiem (Scrub HUD)
   LogPoint? _hoveredPoint;
@@ -103,23 +103,57 @@ class _ChartScreenState extends State<ChartScreen> {
   /// jednostka i liczba miejsc po przecinku w HUD.
   static final List<_Channel> _channels = [
     _Channel("RPM", "RPM", AppTheme.blue, 0, 7500, "", 0),
-    _Channel("BOOST", "Boost", AppTheme.cyan, -1.0, 2.5, "b", 2),
+    _Channel("BOOST", "Doładowanie", AppTheme.cyan, -1.0, 2.5, "b", 2),
+    _Channel("TARGET_BOOST", "Doład. zadane", const Color(0xFF80FFDB), -1.0, 2.5, "b", 2),
     _Channel("PEDAL", "Pedał", const Color(0xFFB5179E), 0, 100, "%", 0),
     _Channel("TPS", "Przepustn.", const Color(0xFF7000FF), 0, 100, "%", 0),
     _Channel("LOAD", "Obciąż.", const Color(0xFF06D6A0), 0, 100, "%", 0),
+    _Channel("MAF", "MAF", AppTheme.green, 0, 250, "g", 0),
+    _Channel("F_RAIL", "Szyna", const Color(0xFFFF0055), 0, 200, "b", 0),
+    _Channel("RAIL_TGT", "Szyna zadana", const Color(0xFFFFB3C1), 0, 200, "b", 0),
+    _Channel("VGT_CMD", "VGT zadane", const Color(0xFFF72585), 0, 100, "%", 0),
+    _Channel("VGT_ACT", "VGT", const Color(0xFFB5179E), 0, 100, "%", 0),
+    _Channel("EGR_CMD", "EGR zadane", const Color(0xFF9C27B0), 0, 100, "%", 0),
+    _Channel("EGR_ACT", "EGR", const Color(0xFFCE93D8), 0, 100, "%", 0),
+    _Channel("DPF_DP", "DPF ΔP", const Color(0xFFD00000), 0, 60, "kPa", 1),
+    _Channel("EXH_P", "Ciśn. spalin", const Color(0xFFFF6D00), 90, 350, "kPa", 0),
+    _Channel("EGT", "EGT", const Color(0xFFFF5400), 100, 900, "°C", 0),
     _Channel("IGN", "Zapłon", AppTheme.orange, -10, 35, "°", 1),
     _Channel("AFR", "AFR", AppTheme.purple, 9, 18, "", 1),
-    _Channel("MAF", "MAF", AppTheme.green, 0, 250, "g", 0),
-    _Channel("F_RAIL", "Szyna paliwa", const Color(0xFFFF0055), 0, 200, "b", 1),
+    _Channel("LAMBDA", "Lambda", const Color(0xFFFF4D6D), 0.7, 3.0, "", 2),
+    _Channel("LAMBDA_CMD", "Lambda zad.", const Color(0xFFFFB3C6), 0.7, 3.0, "", 2),
     _Channel("STFT", "STFT", AppTheme.yellow, -25, 25, "%", 1),
     _Channel("LTFT", "LTFT", const Color(0xFFFB5607), -25, 25, "%", 1),
+    _Channel("TQ_DEMAND", "Moment żąd.", const Color(0xFFFFD166), 0, 100, "%", 0),
+    _Channel("TQ_ACT", "Moment", const Color(0xFFEF476F), 0, 100, "%", 0),
     _Channel("SPEED", "Prędkość", const Color(0xFF9D4EDD), 0, 200, "km/h", 0),
     _Channel("IAT", "IAT", const Color(0xFF4CC9F0), -10, 80, "°C", 0),
     _Channel("ECT", "ECT", const Color(0xFF4361EE), 0, 120, "°C", 0),
-    _Channel("DPF_DP", "DPF ΔP", const Color(0xFFD00000), 0, 60, "kPa", 1),
-    _Channel("EGT", "EGT", const Color(0xFFFF5400), 100, 900, "°C", 0),
-    _Channel("EGR_CMD", "EGR", const Color(0xFF9C27B0), 0, 100, "%", 0),
   ];
+
+  /// Kanał „zadany” (rysowany linią przerywaną na skali swojego rzeczywistego odpowiednika).
+  static bool _isTarget(String key) => ObdPid.targetPairs.containsKey(key);
+
+  /// Zakres osi dla kanału: domyślny rozszerzony do danych; pary zadane/rzeczywiste
+  /// mają wspólną skalę, żeby było widać, o ile rzeczywista wartość odbiega od zadanej.
+  (double, double) _range(_Channel ch, List<LogPoint> points) {
+    final keys = {ch.key};
+    ObdPid.targetPairs.forEach((t, a) {
+      if (t == ch.key || a == ch.key) keys.addAll([t, a]);
+    });
+    double lo = ch.min, hi = ch.max;
+    for (final p in points) {
+      for (final k in keys) {
+        final v = p.values[k];
+        if (v == null) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    }
+    if (hi - lo < 1e-6) hi = lo + 1;
+    return (lo, hi);
+  }
+
 
   /// Kanały obecne w logu (z dodatkiem rozszerzonych parametrów producenta).
   List<_Channel> _availableChannels(List<LogPoint> points) {
@@ -272,21 +306,27 @@ class _ChartScreenState extends State<ChartScreen> {
     // Linie danych przeskalowane do wspólnej osi 0..100% dla przejrzystości
     final List<LineChartBarData> lineBars = [];
 
+    // Długie logi (np. 30 min jazdy) przerzedzamy do ok. 1500 punktów na linię
+    final stride = (points.length / 1500).ceil().clamp(1, 1 << 20);
     for (final ch in _availableChannels(points)) {
       if (!_visibleChannels.contains(ch.key)) continue;
+      final (lo, hi) = _range(ch, points);
       // Tylko punkty, w których parametr został faktycznie odczytany —
       // brak odczytu nie jest rysowany jako 0.
-      final spots = [
-        for (final p in points)
-          if (p.values.containsKey(ch.key))
-            FlSpot(p.timeSec, ((p.values[ch.key]! - ch.min) / (ch.max - ch.min) * 100.0).clamp(0, 100).toDouble()),
-      ];
+      final spots = <FlSpot>[];
+      for (int i = 0; i < points.length; i += stride) {
+        final v = points[i].values[ch.key];
+        if (v == null) continue;
+        spots.add(FlSpot(points[i].timeSec, ((v - lo) / (hi - lo) * 100.0).clamp(0, 100).toDouble()));
+      }
       if (spots.isEmpty) continue;
+      final target = _isTarget(ch.key);
       lineBars.add(LineChartBarData(
         spots: spots,
         isCurved: false,
         color: ch.color,
-        barWidth: ch.key == "BOOST" ? 3.0 : 2.2,
+        barWidth: target ? 1.8 : (ch.key == "BOOST" ? 3.0 : 2.2),
+        dashArray: target ? [6, 4] : null,
         dotData: const FlDotData(show: false),
       ));
     }

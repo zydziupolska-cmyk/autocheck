@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/log_point.dart';
 import '../models/obd_pid.dart';
 import '../services/datalogger_service.dart';
 import '../services/obd_service.dart';
@@ -32,7 +33,7 @@ class LoggerScreen extends StatelessWidget {
           children: [
             Icon(Icons.speed, color: AppTheme.cyan),
             SizedBox(width: 8),
-            Text("Rejestrator Przyspieszenia (WOT)"),
+            Text("Rejestrator"),
           ],
         ),
         actions: [
@@ -51,6 +52,11 @@ class LoggerScreen extends StatelessWidget {
             // Tryb pracy / ostrzeżenia
             _buildSourceBanner(obd, logger),
 
+            // Wybór trybu: pojedyncze przyspieszenie albo dłuższa jazda
+            _buildModeSelector(logger),
+
+            const SizedBox(height: 12),
+
             // Pasek statusu pomiaru (czas, Hz, próbki)
             _buildMetricsBar(logger),
 
@@ -58,6 +64,16 @@ class LoggerScreen extends StatelessWidget {
 
             // Duży przycisk START / STOP dostosowany do kliknięcia w aucie
             _buildBigActionButton(context, logger),
+
+            if (logger.pullMessage != null) ...[
+              const SizedBox(height: 12),
+              _buildInfoBox(logger.pullMessage!, logger.pullState == PullState.armed ? AppTheme.orange : AppTheme.cyan),
+            ],
+
+            if (logger.mode == LogMode.drive && logger.isRecording) ...[
+              const SizedBox(height: 12),
+              _buildDriveLiveCard(logger, obd),
+            ],
 
             const SizedBox(height: 20),
 
@@ -124,8 +140,102 @@ class LoggerScreen extends StatelessWidget {
 
   Widget _divider() => Container(width: 1, height: 26, color: AppTheme.border);
 
+  Widget _buildModeSelector(DataloggerService logger) {
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<LogMode>(
+        segments: const [
+          ButtonSegment(value: LogMode.pull, icon: Icon(Icons.rocket_launch, size: 18), label: Text("Przyspieszenie")),
+          ButtonSegment(value: LogMode.drive, icon: Icon(Icons.route, size: 18), label: Text("Jazda diagnostyczna")),
+        ],
+        selected: {logger.mode},
+        onSelectionChanged: logger.isRecording ? null : (s) => logger.setMode(s.first),
+        style: ButtonStyle(
+          foregroundColor: WidgetStateProperty.resolveWith((states) =>
+              states.contains(WidgetState.selected) ? Colors.black : AppTheme.textSecondary),
+          backgroundColor: WidgetStateProperty.resolveWith((states) =>
+              states.contains(WidgetState.selected) ? AppTheme.cyan : AppTheme.surface),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoBox(String text, Color color) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withAlpha(25),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withAlpha(110)),
+      ),
+      child: Text(text, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w600)),
+    );
+  }
+
+  Widget _buildDriveLiveCard(DataloggerService logger, ObdService obd) {
+    final s = logger.liveStats;
+    final keys = logger.latestValues.keys.toSet();
+    final hints = s.hints(keys, isDiesel: obd.vehicleInfo?.isDiesel ?? false);
+    String mmss(double sec) => "${(sec ~/ 60)}:${(sec % 60).toInt().toString().padLeft(2, '0')}";
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("ZEBRANE DANE", style: TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 18,
+            runSpacing: 10,
+            children: [
+              _metricItem("CZAS JAZDY", mmss(s.durationSec), AppTheme.cyan),
+              _metricItem("DYSTANS", "${s.distanceKm.toStringAsFixed(1)} km", AppTheme.cyan),
+              _metricItem("PRZYSPIESZENIA", "${s.pullsDetected}", s.pullsDetected > 0 ? AppTheme.green : AppTheme.orange),
+              _metricItem("JAŁOWY", mmss(s.idleSec), s.idleSec >= 30 ? AppTheme.green : AppTheme.orange),
+              if (s.maxBoost.isFinite) _metricItem("MAKS. DOŁADOWANIE", "${s.maxBoost.toStringAsFixed(2)} bar", AppTheme.cyan),
+            ],
+          ),
+          for (final h in hints) ...[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.lightbulb_outline, color: AppTheme.yellow, size: 16),
+                const SizedBox(width: 6),
+                Expanded(child: Text(h, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12))),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  static (String, String) _buttonTexts(DataloggerService logger) {
+    if (logger.mode == LogMode.pull) {
+      switch (logger.pullState) {
+        case PullState.armed:
+          return ("CZEKAM NA GAZ DO KOŃCA", "Pomiar zacznie się sam. Dotknij, aby anulować");
+        case PullState.capturing:
+          return ("POMIAR TRWA…", "Trzymaj gaz do końca aż do wysokich obrotów");
+        case PullState.idle:
+          return ("UZBRÓJ POMIAR", "3. bieg, ok. 1500 obr/min, START, potem gaz do końca");
+      }
+    }
+    return logger.isRecording
+        ? ("ZAKOŃCZ I ANALIZUJ", "Jedź normalnie; zrób 1–2 mocne przyspieszenia")
+        : ("START JAZDY DIAGNOSTYCZNEJ", "Jedź 15–30 min — analiza całej jazdy na końcu");
+  }
+
   Widget _buildBigActionButton(BuildContext context, DataloggerService logger) {
     final isRec = logger.isRecording;
+    final (title, subtitle) = _buttonTexts(logger);
 
     return InkWell(
       onTap: () {
@@ -157,8 +267,8 @@ class LoggerScreen extends StatelessWidget {
             ),
           ],
         ),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
         child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
               isRec ? Icons.stop_circle : Icons.play_circle_fill,
@@ -166,28 +276,34 @@ class LoggerScreen extends StatelessWidget {
               size: 44,
             ),
             const SizedBox(width: 14),
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  isRec ? "ZAKOŃCZ POMIAR" : "START POMIARU (WOT)",
-                  style: const TextStyle(
-                    color: Colors.black,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 0.8,
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontSize: 19,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.5,
+                    ),
                   ),
-                ),
-                Text(
-                  isRec ? "Dotknij, aby zatrzymać i natychmiast przeanalizować" : "Wciśnij START, potem jedź — log zapisze się w Historii",
-                  style: const TextStyle(
-                    color: Colors.black87,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+                  Text(
+                    subtitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.black87,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
@@ -434,7 +550,7 @@ class LoggerScreen extends StatelessWidget {
                 child: Text(
                   hasIssues
                       ? "WYKRYTO NIEPRAWIDŁOWOŚCI (${anomalies.length})"
-                      : "PRZYSPIESZENIE WZORCOWE - BRAK BŁĘDÓW!",
+                      : "BRAK NIEPRAWIDŁOWOŚCI",
                   style: TextStyle(
                     color: hasIssues ? AppTheme.red : AppTheme.green,
                     fontSize: 14,
@@ -445,12 +561,22 @@ class LoggerScreen extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          Text(
-            hasIssues
-                ? "Algorytm wykrył podejrzane zachowanie silnika (np. cofanie zapłonu lub spadek doładowania). Sprawdź zaznaczone strefy na wykresie i zapoznaj się z podpowiedziami przyczyn."
-                : "Parametry silnika pod pełnym obciążeniem mieszczą się w normach bezpieczeństwa. Doładowanie, kąt zapłonu i AFR są stabilne.",
-            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12),
-          ),
+          if (hasIssues)
+            for (final a in anomalies.take(3))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  "• ${a.plainSummary ?? a.title}",
+                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 13),
+                ),
+              )
+          else
+            Text(
+              logger.activeSession?.mode == LogMode.pull
+                  ? "Parametry podczas przyspieszenia są w normie: doładowanie nadąża za zadanym, a pozostałe czujniki nie wskazują problemów."
+                  : "Analiza całej jazdy nie wykazała nieprawidłowości w dostępnych parametrach.",
+              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12),
+            ),
           const SizedBox(height: 12),
           Row(
             children: [

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../services/analysis/drive_analyzer.dart';
+import '../models/log_point.dart';
 import '../models/anomaly.dart';
 import '../services/datalogger_service.dart';
 import '../theme/app_theme.dart';
@@ -98,6 +100,21 @@ class DiagnosticScreen extends StatelessWidget {
                   return _buildAnomalyCard(context, anomalies[index]);
                 },
               ),
+
+            // Czego ten log nie pozwolił ocenić
+            if (session != null && session.points.isNotEmpty)
+              for (final note in DriveAnalyzer.coverageNotes(session.points, isDiesel: session.isDiesel))
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.info_outline, color: AppTheme.textMuted, size: 16),
+                      const SizedBox(width: 6),
+                      Expanded(child: Text(note, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12))),
+                    ],
+                  ),
+                ),
           ],
         ),
       ),
@@ -116,8 +133,8 @@ class DiagnosticScreen extends StatelessWidget {
     if (hasCritical) {
       color = AppTheme.red;
       icon = Icons.error_outline;
-      title = "WYKRYTO KRYTYCZNE ZAGROŻENIE SILNIKA!";
-      desc = "Zarejestrowano nieprawidłowości pod pełnym obciążeniem, które grożą uszkodzeniem silnika (np. uboga mieszanka, duży retard zapłonu lub nagła nieszczelność).";
+      title = "WYKRYTO POWAŻNĄ USTERKĘ";
+      desc = "Wykryto usterkę, która powoduje utratę mocy lub grozi uszkodzeniem silnika. Poniżej opis przyczyny i co zrobić.";
     } else if (hasWarning) {
       color = AppTheme.orange;
       icon = Icons.warning_amber_rounded;
@@ -127,7 +144,7 @@ class DiagnosticScreen extends StatelessWidget {
       color = AppTheme.green;
       icon = Icons.check_circle_outline;
       title = "WSZYSTKIE PARAMETRY W NORMIE!";
-      desc = "Układ doładowania, kąt wyprzedzenia zapłonu i skład mieszanki paliwowo-powietrznej są w bezpiecznym i stabilnym zakresie.";
+      desc = "Parametry dostępne w tym logu nie wskazują usterki. Sprawdź poniżej, czy log obejmował wszystko, co da się ocenić.";
     }
 
     return Container(
@@ -163,7 +180,7 @@ class DiagnosticScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildSessionSummary(dynamic session) {
+  Widget _buildSessionSummary(LogSession session) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -175,7 +192,7 @@ class DiagnosticScreen extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            "MAKSYMALNE WARTOŚCI W PRÓBIE",
+            "PODSUMOWANIE LOGU",
             style: TextStyle(color: AppTheme.textMuted, fontSize: 11, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 10),
@@ -184,7 +201,7 @@ class DiagnosticScreen extends StatelessWidget {
             children: [
               _metricTile("MAX RPM", "${session.peakRpm.toInt()}", AppTheme.blue),
               _metricTile("MAX BOOST", "${session.peakBoost.toStringAsFixed(2)} bar", AppTheme.cyan),
-              _metricTile("MIN AFR", "${session.minAfr.toStringAsFixed(1)}:1", AppTheme.purple),
+              _metricTile("TRYB", session.mode == LogMode.pull ? "Przyspieszenie" : "Jazda", AppTheme.purple),
               _metricTile("CZAS", "${session.durationSec.toStringAsFixed(1)} s", AppTheme.yellow),
             ],
           ),
@@ -222,7 +239,7 @@ class DiagnosticScreen extends StatelessWidget {
             ),
             SizedBox(height: 6),
             Text(
-              "Wykres przyspieszenia przebiegł płynnie bez zjawiska cofania zapłonu i spadków ciśnienia.",
+              "Czujniki zachowywały się zgodnie z oczekiwaniami sterownika.",
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
             ),
@@ -284,6 +301,34 @@ class DiagnosticScreen extends StatelessWidget {
                   const Divider(color: AppTheme.border),
                   const SizedBox(height: 6),
 
+                  // Wniosek prostym językiem — co jest nie tak i co zrobić
+                  if (anom.plainSummary != null) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: color.withAlpha(22),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: color, width: 1.2),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "CO TO ZNACZY:",
+                            style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 0.6),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            anom.plainSummary!,
+                            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14, fontWeight: FontWeight.w600, height: 1.35),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
                   // Ostrzeżenie przed mylnym tropem (np. błąd czujnika vs rzeczywista usterka)
                   if (anom.falseLeadWarning != null) ...[
                     Container(
@@ -318,7 +363,7 @@ class DiagnosticScreen extends StatelessWidget {
                   // Korelacja wieloczujnikowa (Stan pozostałych czujników w tej samej chwili)
                   if (anom.correlatedSignals != null && anom.correlatedSignals!.isNotEmpty) ...[
                     const Text(
-                      "ODCZYTY SKORELOWANYCH CZUJNIKÓW W TYM SAMYM MOMENCIE:",
+                      "CO POKAZAŁY POZOSTAŁE CZUJNIKI W TYM SAMYM CZASIE:",
                       style: TextStyle(color: AppTheme.cyan, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.8),
                     ),
                     const SizedBox(height: 8),
@@ -333,18 +378,17 @@ class DiagnosticScreen extends StatelessWidget {
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(color: AppTheme.cyan.withAlpha(100)),
                           ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                "${entry.key}: ",
+                          child: Text.rich(
+                            TextSpan(children: [
+                              TextSpan(
+                                text: "${entry.key}: ",
                                 style: const TextStyle(color: AppTheme.cyan, fontSize: 11, fontWeight: FontWeight.w900),
                               ),
-                              Text(
-                                entry.value,
+                              TextSpan(
+                                text: entry.value,
                                 style: const TextStyle(color: AppTheme.textPrimary, fontSize: 11, fontWeight: FontWeight.w600),
                               ),
-                            ],
+                            ]),
                           ),
                         );
                       }).toList(),
@@ -355,7 +399,7 @@ class DiagnosticScreen extends StatelessWidget {
                   // Przyczyny wykluczone przez inne parametry
                   if (anom.ruledOutCauses != null && anom.ruledOutCauses!.isNotEmpty) ...[
                     const Text(
-                      "CO DEFINITYWNIE WYKLUCZAJĄ POZOSTAŁE CZUJNIKI:",
+                      "CO WYKLUCZAJĄ POZOSTAŁE CZUJNIKI:",
                       style: TextStyle(color: AppTheme.green, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.8),
                     ),
                     const SizedBox(height: 6),

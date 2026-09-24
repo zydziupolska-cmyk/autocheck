@@ -51,6 +51,19 @@ class MockElm327 {
   /// Obroty zwracane przez ECU silnika.
   double rpm = 850;
 
+  // --- Stan silnika sterowany przez testy (np. symulacja przyspieszenia) ---
+  double pedalPct = 0; // pedał gazu 0-100%
+  double mapKpa = 101; // ciśnienie w kolektorze (bezwzględne)
+  double targetKpa = 101; // doładowanie zadane (bezwzględne)
+  double mafGs = 5.0;
+  double dpfDpKpa = 2.0;
+  double railTgtBar = 300;
+  double railActBar = 298;
+  double vgtCmdPct = 50;
+  double vgtActPct = 50;
+  double egrCmdPct = 30;
+  double egrActPct = 30;
+
   int get port => _server.port;
 
   static const vin = "WVGZZZ1TZFW011407";
@@ -255,7 +268,18 @@ class MockElm327 {
   // Mode 06: maski zakresów + liczniki wypadania zapłonów cylindrów 1-4 ($A2-$A5)
   static const mode06Supported = {0x01, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xA2, 0xA3, 0xA4, 0xA5};
 
-  Set<int> get _supported => petrol ? {...engineSupported, ...petrolExtra} : engineSupported;
+  // Diesel EDC17: doładowanie zadane/rzeczywiste (70), szyna (6D), VGT (71), EGR (69),
+  // ciśnienie spalin (73), moment żądany/rzeczywisty (61/62)
+  static const dieselExtra = {0x61, 0x62, 0x69, 0x6D, 0x70, 0x71, 0x73};
+
+  Set<int> get _supported => petrol ? {...engineSupported, ...petrolExtra} : {...engineSupported, ...dieselExtra};
+
+  List<int> _u16(double v) {
+    final i = v.round().clamp(0, 0xFFFF);
+    return [i >> 8, i & 0xFF];
+  }
+
+  int _pct(double p) => (p * 255 / 100).round().clamp(0, 255);
 
   List<int> _misfireRecord(int mid, int count) => [
         mid, 0x0B, 0x24, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, // średnia z 10 cykli
@@ -287,7 +311,21 @@ class MockElm327 {
             final raw = (rpm * 4).round();
             return [0x41, 0x0C, raw >> 8, raw & 0xFF];
           case 0x0B:
-            return [0x41, 0x0B, 101];
+            return [0x41, 0x0B, mapKpa.round().clamp(0, 255)];
+          case 0x70:
+            return [0x41, 0x70, 0x03, ..._u16(targetKpa * 32), ..._u16(mapKpa * 32), 0, 0, 0, 0, 0];
+          case 0x6D:
+            return [0x41, 0x6D, 0x03, ..._u16(railTgtBar * 10), ..._u16(railActBar * 10), 0x50, 0, 0, 0, 0, 0];
+          case 0x71:
+            return [0x41, 0x71, 0x03, _pct(vgtCmdPct), _pct(vgtActPct), 0, 0, 0];
+          case 0x69:
+            return [0x41, 0x69, 0x03, _pct(egrCmdPct), _pct(egrActPct), 128, 0, 0, 0];
+          case 0x73:
+            return [0x41, 0x73, 0x01, ..._u16((mapKpa + 10) * 100), 0, 0];
+          case 0x61:
+            return [0x41, 0x61, (125 + pedalPct).round()];
+          case 0x62:
+            return [0x41, 0x62, (125 + pedalPct * 0.9).round()];
           case 0x33:
             return [0x41, 0x33, 99];
           case 0x0D:
@@ -299,11 +337,12 @@ class MockElm327 {
           case 0x04:
             return [0x41, 0x04, 51];
           case 0x10:
-            return [0x41, 0x10, 0x01, 0xF4]; // 5.00 g/s
+            return [0x41, 0x10, ..._u16(mafGs * 100)];
           case 0x11:
             return [0x41, 0x11, 250]; // klapa dławiąca diesla — prawie otwarta
           case 0x49:
-            return [0x41, 0x49, 38]; // pedał w spoczynku (~15%)
+            // czujnik pedału D: ok. 15% w spoczynku, ok. 80% przy pełnym wciśnięciu
+            return [0x41, 0x49, ((15 + pedalPct * 0.65) * 255 / 100).round()];
           case 0x51:
             return [0x41, 0x51, petrol ? 1 : 4]; // Benzyna / Diesel
           case 0x31:
@@ -313,7 +352,7 @@ class MockElm327 {
           case 0x23:
             return [0x41, 0x23, 0x0B, 0xB8]; // 3000 * 10 kPa = 300 bar
           case 0x7A:
-            return [0x41, 0x7A, 0x01, 0x00, 0xC8]; // 2.00 kPa
+            return [0x41, 0x7A, 0x01, ..._u16(dpfDpKpa * 100)];
           case 0x78:
             return [0x41, 0x78, 0x01, 0x10, 0x68, 0, 0, 0, 0, 0, 0]; // (4200/10)-40 = 380 °C
           default:
@@ -338,6 +377,11 @@ class MockElm327 {
         }
         return null;
       case 0x22:
+        // UDS VAG (tylko wersja benzynowa): doładowanie rzeczywiste 202A i zadane 2029 w hPa
+        if (petrol && req.length >= 3 && req[1] == 0x20 && (req[2] == 0x2A || req[2] == 0x29)) {
+          final hPa = (req[2] == 0x2A ? mapKpa : targetKpa) * 10;
+          return [0x62, 0x20, req[2], ..._u16(hPa * 10)]; // dekoder: (A*256+B)*0.1
+        }
         return [0x7F, 0x22, 0x31]; // requestOutOfRange
     }
     return null;

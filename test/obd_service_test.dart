@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:autocheck/models/obd_pid.dart';
 import 'package:autocheck/services/datalogger_service.dart';
 import 'package:autocheck/services/obd_service.dart';
+import 'package:autocheck/models/extended_pid.dart';
+import 'package:autocheck/models/log_point.dart';
 
 import 'support/mock_elm327.dart';
 
@@ -91,7 +93,9 @@ void main() {
     // MAP 101 kPa, ciśnienie atmosferyczne 99 kPa → +0.02 bar
     expect(await obd.readPid(pid("BOOST")), closeTo(0.02, 0.001));
     expect(await obd.readPid(pid("ECT")), 90);
-    expect(await obd.readPid(pid("F_RAIL")), closeTo(300, 0.01));
+    // Szyna z PID 6D: zadane i rzeczywiste z jednego zapytania
+    expect(await obd.readPid(pid("F_RAIL")), closeTo(298, 0.01));
+    expect(await obd.readPid(pid("RAIL_TGT")), closeTo(300, 0.01));
     expect(await obd.readPid(pid("EGT")), closeTo(380, 0.1));
     expect(await obd.readPid(pid("DPF_DP")), closeTo(2.0, 0.001));
 
@@ -219,5 +223,97 @@ void main() {
       // Bez ISO-TP nie ma adresowania fizycznego ani skróconego oczekiwania
       expect(car.receivedCommands.where((c) => c.startsWith("ATSH")), isEmpty);
     });
+  });
+
+  group('parametry zadane i rzeczywiste', () {
+    test('diesel: zadane i rzeczywiste doładowanie z PID 70 — jedno zapytanie na oba kanały', () async {
+      await connect();
+      final keys = obd.discoveredPids.map((p) => p.shortName).toSet();
+      expect(keys, containsAll(["BOOST", "TARGET_BOOST", "RAIL_TGT", "VGT_CMD", "VGT_ACT", "EGR_CMD", "EGR_ACT", "EXH_P", "TQ_DEMAND", "TQ_ACT"]));
+      expect(obd.discoveredPids.firstWhere((p) => p.shortName == "BOOST").code, "0170");
+
+      elm.targetKpa = 239; // 1.40 bar nad atmosferą (99 kPa)
+      elm.mapKpa = 159; // 0.60 bar
+      final before = elm.receivedCommands.where((c) => c.startsWith("0170")).length;
+      final values = await obd.readPids(obd.discoveredPids.where((p) => p.code == "0170").toList());
+      expect(values["TARGET_BOOST"], closeTo(1.40, 0.01));
+      expect(values["BOOST"], closeTo(0.60, 0.01));
+      expect(elm.receivedCommands.where((c) => c.startsWith("0170")).length - before, 1);
+    });
+
+    test('benzyna VAG: zadane doładowanie z UDS (DID 2029) z automatycznym wykryciem jednostki hPa', () async {
+      final car = await MockElm327.start(petrol: true);
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      expect(await service.connectWifi(ip: "127.0.0.1", port: car.port), isTrue, reason: service.statusMessage);
+
+      final target = service.discoveredPids.firstWhere((p) => p.shortName == "TARGET_BOOST");
+      expect(target, isA<ExtendedPid>());
+      expect((target as ExtendedPid).requestCommand, "222029");
+      // Rzeczywiste doładowanie ze standardowego PID (standard ma pierwszeństwo przed UDS)
+      expect(service.discoveredPids.firstWhere((p) => p.shortName == "BOOST").code, "010B");
+
+      car.targetKpa = 199; // 1.00 bar nad atmosferą
+      expect(await service.readPid(target), closeTo(1.0, 0.02));
+    });
+  });
+
+  test('tryb przyspieszenia: rejestrator sam łapie przyspieszenie, a Asystent wskazuje zapchany DPF', () async {
+    final logger = DataloggerService(obdService: obd, persistHistory: false);
+    await connect();
+    logger.setMode(LogMode.pull);
+    logger.startRecording();
+    expect(logger.pullState, PullState.armed);
+
+    // Jazda przed przyspieszeniem
+    elm
+      ..rpm = 1500
+      ..pedalPct = 20
+      ..mapKpa = 130
+      ..targetKpa = 130
+      ..mafGs = 30
+      ..dpfDpKpa = 8
+      ..egrCmdPct = 0
+      ..egrActPct = 0;
+    await Future.delayed(const Duration(milliseconds: 1000));
+    expect(logger.pullState, PullState.armed);
+
+    // Przyspieszenie 1500 → 4200 obr/min w 4 s: turbo daje połowę zadanego, DPF stawia duży opór,
+    // a napełnienie cylindrów spada wraz z obrotami (silnik „dusi się” spalinami)
+    const steps = 40;
+    for (int i = 0; i <= steps; i++) {
+      final rpm = 1500 + 2700 * i / steps;
+      final targetBar = rpm < 2500 ? 0.8 + (rpm - 1500) / 1000 * 0.6 : 1.4;
+      final actualBar = rpm < 1900 ? targetBar - 0.05 : targetBar * 0.5;
+      final ve = 0.9 * (1 - 0.35 * ((rpm - 1500) / 2700));
+      elm
+        ..rpm = rpm
+        ..pedalPct = 100
+        ..targetKpa = 99 + targetBar * 100
+        ..mapKpa = 99 + actualBar * 100
+        ..mafGs = rpm / 60 * 1.18 * (1 + actualBar) * ve
+        ..dpfDpKpa = 0.33 * (rpm / 60 * 1.18 * (1 + actualBar) * ve);
+      await Future.delayed(const Duration(milliseconds: 100));
+      if (i == 5) expect(logger.pullState, PullState.capturing);
+    }
+    // Zdjęcie gazu kończy pomiar
+    elm
+      ..pedalPct = 0
+      ..rpm = 3800;
+    for (int i = 0; i < 40 && logger.isRecording; i++) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+
+    expect(logger.isRecording, isFalse, reason: logger.pullMessage);
+    final session = logger.activeSession!;
+    expect(session.mode, LogMode.pull);
+    expect(session.durationSec, greaterThan(3));
+    expect(session.durationSec, lessThan(8)); // tylko samo przyspieszenie (+ ok. 1 s przed)
+    final dpf = logger.detectedAnomalies.where((a) => a.id.startsWith("dpf_underboost_")).toList();
+    expect(dpf, hasLength(1), reason: logger.detectedAnomalies.map((a) => "${a.id}: ${a.title}").join("\n"));
+    expect(dpf.single.plainSummary, contains("DPF"));
   });
 }

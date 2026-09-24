@@ -51,6 +51,9 @@ class LogPoint {
   );
 }
 
+/// Rodzaj pomiaru: pojedyncze przyspieszenie lub dłuższa jazda diagnostyczna.
+enum LogMode { pull, drive }
+
 class LogSession {
   final String id;
   final String title;
@@ -61,6 +64,8 @@ class LogSession {
 
   /// Log z silnika Diesla — wyłącza reguły analizy przeznaczone dla benzyny.
   final bool isDiesel;
+
+  final LogMode mode;
 
   /// Opis pojazdu, z którego pochodzi log (np. "Volkswagen Touran (1T) • WVG...").
   final String? vehicleLabel;
@@ -73,6 +78,7 @@ class LogSession {
     required this.points,
     this.isDiesel = false,
     this.vehicleLabel,
+    this.mode = LogMode.drive,
   }) : durationSec = points.isEmpty ? 0.0 : (points.last.timeMs - points.first.timeMs) / 1000.0;
 
   Map<String, dynamic> toJson() => {
@@ -82,6 +88,7 @@ class LogSession {
         "activePidKeys": activePidKeys,
         "isDiesel": isDiesel,
         "vehicleLabel": vehicleLabel,
+        "mode": mode.name,
         "points": points.map((p) => p.toJson()).toList(),
       };
 
@@ -92,6 +99,7 @@ class LogSession {
         activePidKeys: (json["activePidKeys"] as List).map((e) => e.toString()).toList(),
         isDiesel: json["isDiesel"] as bool? ?? false,
         vehicleLabel: json["vehicleLabel"] as String?,
+        mode: json["mode"] == "pull" ? LogMode.pull : LogMode.drive,
         points: (json["points"] as List).map((e) => LogPoint.fromJson(e as Map<String, dynamic>)).toList(),
       );
 

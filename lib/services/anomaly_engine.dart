@@ -2,6 +2,8 @@ import 'dart:math';
 import '../models/anomaly.dart';
 import '../models/log_point.dart';
 import '../models/trip_report.dart';
+import 'analysis/drive_analyzer.dart';
+import 'analysis/drive_state.dart';
 
 class AnomalyEngine {
   /// Analizuje zebraną sesję logowania i zwraca listę wykrytych nieprawidłowości
@@ -9,8 +11,10 @@ class AnomalyEngine {
   /// [isDiesel] wyłącza reguły, które mają sens tylko w silnikach benzynowych
   /// (skład mieszanki AFR/lambda, sonda wąskopasmowa, kąt zapłonu, podciśnienie
   /// w kolektorze na biegu jałowym — diesel nie ma przepustnicy dławiącej).
-  static List<Anomaly> analyzeSession(List<LogPoint> points, {bool isDiesel = false}) {
-    if (points.length < 5) return [];
+  static List<Anomaly> analyzeSession(List<LogPoint> rawPoints, {bool isDiesel = false}) {
+    if (rawPoints.length < 5) return [];
+    // Wolne kanały są odpytywane rzadziej — uzupełnij je ostatnią znaną wartością
+    final points = DriveState.forwardFill(rawPoints);
 
     final List<Anomaly> anomalies = [];
 
@@ -31,9 +35,6 @@ class AnomalyEngine {
       // 2. Analiza spadków ciśnienia doładowania (Boost Leaks)
       _checkBoostLeaks(window, anomalies);
 
-      // 3. Analiza braku doładowania i korelacji z DPF / GPF (Przeciwciśnienie wydechu)
-      _checkUnderboostAndDpfCorrelation(window, anomalies);
-
       // 4. Analiza składu mieszanki (Lean AFR under load)
       if (!isDiesel) _checkLeanAfr(window, anomalies);
 
@@ -46,11 +47,6 @@ class AnomalyEngine {
       // 7. Analiza korekt paliwowych (STFT / LTFT)
       _checkFuelTrims(window, anomalies);
 
-      // 8. Porównanie ciśnienia zadanego z rzeczywistym (Target Boost vs Actual)
-      _checkBoostDeviation(window, anomalies);
-
-      // 9. Ecology Tamper Check (Wykrywanie wyprogramowanego DPF / EGR)
-      _checkEcologyTampering(window, anomalies);
     }
 
     // 10. Badanie Leniwej Sondy Lambda (Wąskopasmowa) - na pełnej sesji
@@ -70,6 +66,14 @@ class AnomalyEngine {
 
     // 9. Analiza zacięcia zmiennych faz rozrządu VVT / utraty podciśnienia w kolektorze (P0011)
     if (!isDiesel) _checkVvtJamming(points, anomalies);
+
+    // Wykrywanie wyłączonej ekologii (DPF/EGR) — na całej sesji, bo EGR ocenia się
+    // przy częściowym obciążeniu, a nie tylko w oknach pełnego gazu
+    _checkEcologyTampering(points, anomalies, isDiesel: isDiesel);
+
+    // 13. Diagnoza różnicowa całej jazdy: doładowanie (DPF / nieszczelność / VGT / EGR / tryb
+    //     awaryjny), ciśnienie paliwa zadane vs rzeczywiste, siłowniki, zapełnienie DPF, moment
+    anomalies.addAll(DriveAnalyzer.analyze(points, isDiesel: isDiesel));
 
     return anomalies;
   }
@@ -258,78 +262,8 @@ class AnomalyEngine {
     }
   }
 
-  /// Porównuje zadane ciśnienie doładowania (Target Boost) z rzeczywistym (Actual Boost)
-  static void _checkBoostDeviation(List<LogPoint> points, List<Anomaly> anomalies) {
-    if (!points.any((p) => p.values.containsKey("BOOST")) || !points.any((p) => p.values.containsKey("TARGET_BOOST"))) {
-      return;
-    }
-
-    // Szukamy momentów pełnego obciążenia
-    final wotPoints = points.where((p) => p.tps >= 80 || p.load >= 80).toList();
-    if (wotPoints.length < 10) return;
-
-    double maxDeviation = 0;
-    LogPoint? worstDeviationPoint;
-    bool isOverboost = false;
-
-    for (final p in wotPoints) {
-      final actual = p.boost;
-      final target = p.values["TARGET_BOOST"]!;
-      
-      // Sprawdzamy tylko gdy sterownik oczekuje przynajmniej 0.4 bar doładowania
-      if (target > 0.4) {
-        final deviation = actual - target;
-        if (deviation.abs() > maxDeviation.abs()) {
-          maxDeviation = deviation;
-          worstDeviationPoint = p;
-        }
-      }
-    }
-
-    if (worstDeviationPoint != null && maxDeviation.abs() >= 0.35) { // Odchyłka co najmniej 0.35 bar
-      isOverboost = maxDeviation > 0;
-      final targetStr = worstDeviationPoint.values["TARGET_BOOST"]!.toStringAsFixed(2);
-      final actualStr = worstDeviationPoint.boost.toStringAsFixed(2);
-      final diffStr = maxDeviation.abs().toStringAsFixed(2);
-
-      anomalies.add(Anomaly(
-        id: "boost_dev_${worstDeviationPoint.timeMs.toInt()}",
-        title: isOverboost 
-            ? "Przeładowanie (Overboost) - Przekroczenie ciśnienia zadanego"
-            : "Niedoładowanie (Underboost) - Znaczny brak zadanego ciśnienia",
-        severity: AnomalySeverity.critical,
-        paramKey: "BOOST",
-        startMs: wotPoints.first.timeMs,
-        endMs: wotPoints.last.timeMs,
-        startRpm: wotPoints.first.rpm,
-        endRpm: wotPoints.last.rpm,
-        observedValueText: "Oczekiwane: $targetStr bar | Rzeczywiste: $actualStr bar (Różnica: $diffStr bar)",
-        description: isOverboost 
-            ? "Turbosprężarka pompuje o $diffStr bar WIĘCEJ niż żąda tego sterownik silnika. Może to doprowadzić do wybuchu rozerwania węży (boost leak) lub w ostateczności uszkodzenia silnika (np. urwanie korbowodu). Sterownik wejdzie w tryb awaryjny."
-            : "Silnik żąda $targetStr bar ciśnienia, ale układ jest w stanie wygenerować jedynie $actualStr bar. Brakuje aż $diffStr bar do zadanej mocy.",
-        hypotheses: isOverboost 
-            ? [
-                "Zacięta geometria VNT w turbosprężarce (zapiekła się w pozycji zamkniętej)",
-                "Uszkodzony lub źle wpięty zawór N75 sterujący podciśnieniem turbiny",
-                "Pęknięty wężyk idący do gruszki wastegate (turbina ładuje na maksa, brak upustu)",
-              ]
-            : [
-                "Nieszczelność układu dolotowego (dziura w wężu lub intercoolerze)",
-                "Zacięta geometria VNT w pozycji otwartej (brak zdolności do spoolu)",
-                "Brak wysterowania z zaworu N75 lub dziurawy wężyk podciśnienia sterującego gruszką",
-                "Znaczne ograniczenie przepływu spalin (np. zapchany DPF/Katalizator)",
-              ],
-        recommendations: [
-          "Sprawdź wężyki podciśnienia sterujące zmienną geometrią (VNT) lub zaworem wastegate.",
-          "Wykonaj log statyczny zaworu N75 (wysterowanie w % vs ciśnienie).",
-          if (!isOverboost) "Zrób próbę szczelności dolotu, pompując w niego sprężone powietrze.",
-        ],
-      ));
-    }
-  }
-
   /// Moduł "Ecology Tamper Check": Wykrywa usunięcie fizyczne lub programowe DPF / EGR
-  static void _checkEcologyTampering(List<LogPoint> points, List<Anomaly> anomalies) {
+  static void _checkEcologyTampering(List<LogPoint> points, List<Anomaly> anomalies, {bool isDiesel = false}) {
     if (points.length < 20) return;
 
     // 1. Sprawdzenie zamrożonego DPF (Wyprogramowanie w ECU lub emulator)
@@ -374,7 +308,14 @@ class AnomalyEngine {
 
     // 2. Sprawdzenie wyprogramowania lub zaślepienia EGR
     if (points.any((p) => p.values.containsKey("EGR_CMD"))) {
-      final egrPoints = points.where((p) => p.values.containsKey("EGR_CMD")).toList();
+      // Tylko częściowe obciążenie i jałowy — pod pełnym gazem każdy sprawny silnik zamyka EGR
+      final egrPoints = points
+          .where((p) =>
+              p.values.containsKey("EGR_CMD") &&
+              p.rpm >= 600 &&
+              p.rpm <= 3000 &&
+              !DriveState.isFullThrottle(p.values, isDiesel: isDiesel))
+          .toList();
       
       // Detekcja Software Delete (Zawsze 0%)
       bool isSoftwareDeleted = true;
@@ -395,7 +336,7 @@ class AnomalyEngine {
           endMs: egrPoints.last.timeMs,
           startRpm: egrPoints.first.rpm,
           endRpm: egrPoints.last.rpm,
-          observedValueText: "Zadane otwarcie EGR (EGR_CMD) przez 100% czasu trwania logu wynosi 0.0%.",
+          observedValueText: "Zadane otwarcie EGR (EGR_CMD) przy częściowym obciążeniu i na jałowym przez cały log wynosi 0.0%.",
           description: "Nawet na biegu jałowym i przy spokojnej jeździe (kiedy EGR powinien być najbardziej aktywny by obniżać NOx), sterownik silnika kategorycznie żąda 0% otwarcia. Oznacza to, że mapa silnika została zmieniona w celu trwałego wyłączenia (EGR Off).",
           hypotheses: [
             "Wyprogramowanie EGR (EGR Delete) w mapie sterownika ECU."
@@ -512,74 +453,6 @@ class AnomalyEngine {
           // Przeskakujemy by nie rzucić wielu błędów na raz
           i += (delayMs / 50).toInt(); 
         }
-      }
-    }
-  }
-
-  /// Analizuje brak budowania doładowania i koreluje go z układem wydechowym (DPF / GPF / Przeciwciśnienie)
-  static void _checkUnderboostAndDpfCorrelation(List<LogPoint> points, List<Anomaly> anomalies) {
-    if (!points.any((p) => p.values.containsKey("BOOST"))) return;
-
-    // Szukamy okien pełnego buta (WOT) w średnim/wyższym zakresie obrotów
-    final wotPoints = points.where((p) => (p.tps >= 75 || p.load >= 75) && p.rpm >= 2200 && p.rpm <= 5200).toList();
-    if (wotPoints.length < 10) return;
-
-    final maxBoost = wotPoints.map((p) => p.boost).reduce(max);
-
-    // Jeśli pod pełnym butem turbo ledwo dmucha (< 0.55 bar)
-    if (maxBoost < 0.55) {
-      final worstPoint = wotPoints.firstWhere((p) => p.boost == maxBoost);
-      final hasDpf = points.any((p) => p.values.containsKey("DPF_DP"));
-      final maxDpfDp = hasDpf ? wotPoints.map((p) => p.dpfDp).reduce(max) : 0.0;
-      final maxSoot = points.any((p) => p.values.containsKey("DPF_SOOT"))
-          ? wotPoints.map((p) => p.dpfSoot).reduce(max)
-          : 0.0;
-      final maxEgt = points.any((p) => p.values.containsKey("EGT"))
-          ? wotPoints.map((p) => p.egt).reduce(max)
-          : 0.0;
-
-      if (maxDpfDp >= 25.0 || maxSoot >= 75.0) {
-        // Scenariusz: Dławienie wirnika turbiny przez zapchany DPF/GPF
-        anomalies.add(Anomaly(
-          id: "dpf_underboost_${worstPoint.timeMs.toInt()}",
-          title: "Brak doładowania z powodu zapchanego DPF/GPF (Dławienie wirnika spalinami)",
-          severity: AnomalySeverity.critical,
-          paramKey: "DPF_DP",
-          startMs: wotPoints.first.timeMs,
-          endMs: wotPoints.last.timeMs,
-          startRpm: wotPoints.first.rpm,
-          endRpm: wotPoints.last.rpm,
-          observedValueText: "Różnica ciśnień DPF: ${maxDpfDp.toStringAsFixed(1)} kPa (Norma: < 15 kPa) | Doładowanie: ${maxBoost.toStringAsFixed(2)} bar (Wymagane: 1.40 bar)",
-          primarySymptom: "Turbosprężarka nie buduje ciśnienia (maks. ${maxBoost.toStringAsFixed(2)} bar) mimo pełnego otwarcia przepustnicy (TPS ${worstPoint.tps.toInt()}%)",
-          correlatedSignals: {
-            "DPF_DP": "${maxDpfDp.toStringAsFixed(1)} kPa (ekstremalne przeciwciśnienie, wydech zatkany)",
-            "DPF_SOOT": maxSoot > 0 ? "${maxSoot.toStringAsFixed(0)}%" : "Niedostępne",
-            "BOOST": "${maxBoost.toStringAsFixed(2)} bar (drastyczny brak ciśnienia)",
-            "EGT": maxEgt > 0 ? "${maxEgt.toStringAsFixed(0)} °C (wysoka temp. dławionych spalin)" : "Brak odczytu",
-            "TPS": "${worstPoint.tps.toInt()}%",
-          },
-          falseLeadWarning: "UWAGA NA KOSZTOWNY BŁĄD: Sterownik silnika zapisze kod P0299 (Niedoładowanie). Warsztaty w ciemno wymieniają turbosprężarkę za 2500–4000 zł! Sama turbina jest w 100% SPRAWNA – nie może wejść na obroty, bo spaliny są zablokowane jak korkiem w zapchanym filtrze cząstek stałych!",
-          ruledOutCauses: [
-            "Wykluczono uszkodzenie mechaniczne wirnika kompresora – brak ciśnienia wynika z braku przepływu spalin na wirniku gorącym",
-            "Wykluczono nieszczelność rurociągu dolotu (brak dźwięku uciekającego ciśnienia)",
-            "Wykluczono zacięcie geometrii VNT w pozycji otwartej jako pierwotną przyczynę",
-          ],
-          rootCauseConclusion: "Filtr cząstek stałych (DPF / GPF) jest skrajnie niedrożny (różnica ciśnień ${maxDpfDp.toStringAsFixed(1)} kPa). Zgodnie z fizyką przepływów, turbosprężarka potrzebuje spadku ciśnienia PRZED i ZA wirnikiem spalinowym, aby wirnik mógł się rozpędzić do 150 000+ obr/min. Zapchany filtr tworzy poduszkę gazową (przeciwciśnienie), która skutecznie hamuje wirnik turbiny i blokuje doładowanie.",
-          description: "Wykryto krytyczną zależność przyczynowo-skutkową: turbosprężarka nie buduje ciśnienia, ponieważ filtr cząstek stałych DPF/GPF generuje potężne przeciwciśnienie (${maxDpfDp.toStringAsFixed(1)} kPa). Silnik jest dosłownie dławiony własnymi spalinami.",
-          hypotheses: [
-            "Przepełniony filtr DPF/GPF sadzą i popiołem olejowym (brak warunków do regeneracji pasywnej)",
-            "Uszkodzony termostat uniemożliwiający wejście w procedurę wypalania DPF (silnik niedogrzany)",
-            "Stopione lub zapchane sadzą przewody impulsowe czujnika różnicy ciśnień",
-            "Lejący wtryskiwacz paliwa powodujący lawinowe zapychanie filtra cząstek stałych",
-          ],
-          recommendations: [
-            "NIE WYMIENIAJ TURBOSPRĘŻARKI!",
-            "Odczytaj kody błędów – szukaj P2463 (Soot Accumulation) oraz P2452 (Pressure Sensor).",
-            "Sprawdź temperaturę płynu chłodzącego (ECT) – jeśli auto ma poniżej 82°C w trasie, wymień termostat, aby DPF mógł się wypalić.",
-            "Zleć profesjonalne czyszczenie hydrodynamiczne wkładu DPF lub wymuszoną regenerację serwisową.",
-            "Skontroluj drożność metalowych i gumowych rurek łączących wydech z czujnikiem różnicy ciśnień.",
-          ],
-        ));
       }
     }
   }

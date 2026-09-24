@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:autocheck/models/obd_pid.dart';
+import 'package:autocheck/models/log_point.dart';
 import 'package:autocheck/models/anomaly.dart';
 import 'package:autocheck/models/vehicle_info.dart';
 import 'package:autocheck/services/anomaly_engine.dart';
@@ -21,10 +22,10 @@ void main() {
       expect(rpm, 1726.0);
     });
 
-    test('Boost/MAP decoder calculates relative pressure in bar', () {
-      final boostPid = ObdPid.getByShortName('BOOST')!;
-      final boost = boostPid.decoder([235]);
-      expect(boost, closeTo(1.35, 0.01));
+    test('MAP decoder returns absolute kPa (converted to relative bar by ObdService)', () {
+      final mapPid = ObdPid.getByCode('010B')!;
+      expect(mapPid.decoder([235]), 235);
+      expect(mapPid.transform, ValueTransform.absKpaToRelBar);
     });
 
     test('AFR decoder converts Lambda to Air/Fuel ratio', () {
@@ -127,7 +128,23 @@ void main() {
   });
 
   test('DPF EGR Delete scenario should detect tampering', () {
-    final points = generateSyntheticRun(SyntheticScenario.dpfEgrDelete);
+    // Ocena EGR wymaga jazdy przy częściowym obciążeniu (pod pełnym gazem każdy
+    // sprawny silnik zamyka EGR) — do przyspieszenia dokładamy 15 s wolnych obrotów.
+    final pull = generateSyntheticRun(SyntheticScenario.dpfEgrDelete);
+    final last = pull.last;
+    final points = [
+      ...pull,
+      for (int i = 1; i <= 75; i++)
+        LogPoint(timeMs: last.timeMs + i * 200, values: {
+          ...last.values,
+          "RPM": 800,
+          "TPS": 0,
+          "SPEED": 0,
+          "MAF": 8,
+          "EGR_CMD": 0,
+          "DPF_DP": 0,
+        }),
+    ];
     final anomalies = AnomalyEngine.analyzeSession(points);
     final hasDpfTampering = anomalies.any((a) => a.id.startsWith('dpf_delete_'));
     final hasEgrTampering = anomalies.any((a) => a.id.startsWith('egr_software_delete_'));
