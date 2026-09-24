@@ -353,7 +353,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     color: v.distanceSinceDtcClearedKm < 50 ? AppTheme.warn : null,
                   ),
                 ],
-                row("Adapter", obd.stnId ?? obd.adapterId),
+                row("Adapter", (obd.stnId ?? "").startsWith("DX1") ? "Kostka Dynomic OBD (${obd.stnId})" : obd.stnId ?? obd.adapterId),
                 if (obd.protocolName.isNotEmpty) row("Protokół", obd.protocolName.replaceFirst("AUTO, ", "")),
               ],
             ),
@@ -463,7 +463,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     final r = _scanResults[i];
                     final name = r.device.platformName.isNotEmpty ? r.device.platformName : "Nieznane urządzenie";
                     final lower = name.toLowerCase();
-                    final likelyObd = lower.contains("vlinker") || lower.contains("obd") || lower.contains("v-link");
+                    final likelyObd = lower.contains("vlinker") || lower.contains("obd") || lower.contains("v-link") || lower.contains("dynomic");
                     return ListTile(
                       dense: true,
                       leading: Icon(Icons.bluetooth, size: 20, color: likelyObd ? AppTheme.accent : AppTheme.textMuted),
