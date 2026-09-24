@@ -1,5 +1,6 @@
 import 'dart:math';
 import '../../models/anomaly.dart';
+import '../../models/dtc_code.dart';
 import '../../models/log_point.dart';
 import 'drive_state.dart';
 
@@ -141,16 +142,17 @@ class DriveAnalyzer {
   // Analiza
   // ---------------------------------------------------------------------------
 
-  static List<Anomaly> analyze(List<LogPoint> rawPoints, {required bool isDiesel}) {
+  static List<Anomaly> analyze(List<LogPoint> rawPoints, {required bool isDiesel, List<String> dtcCodes = const []}) {
     if (rawPoints.length < 5) return const [];
+    final dtcs = dtcCodes.map((c) => c.toUpperCase().trim()).toSet();
     final pts = DriveState.forwardFill(rawPoints);
     final pulls = findPulls(pts, isDiesel: isDiesel);
     final pullPts = _settledPullPoints(pts, pulls);
 
     final anomalies = <Anomaly>[];
-    final boost = _diagnoseBoost(pts, pulls, pullPts, isDiesel: isDiesel);
+    final boost = _diagnoseBoost(pts, pulls, pullPts, isDiesel: isDiesel, dtcs: dtcs);
     if (boost != null) anomalies.add(boost);
-    final rail = _diagnoseRail(pts, pullPts, isDiesel: isDiesel);
+    final rail = _diagnoseFuelPressure(pts, isDiesel: isDiesel, dtcs: dtcs);
     if (rail != null) anomalies.add(rail);
     final vgt = _diagnoseActuatorTracking(pts, "VGT_CMD", "VGT_ACT", "vgt_tracking",
         "Kierownice turbiny (VGT) nie nadążają za sterownikiem",
@@ -167,6 +169,7 @@ class DriveAnalyzer {
     if (dpf != null) anomalies.add(dpf);
     final torque = _diagnoseTorqueLimit(pullPts, boostAnomalyPresent: boost != null);
     if (torque != null) anomalies.add(torque);
+    anomalies.addAll(_unconfirmedDtcs(pts, dtcs, anomalies));
     return anomalies;
   }
 
@@ -196,7 +199,7 @@ class DriveAnalyzer {
   // ---------------------------------------------------------------------------
 
   static Anomaly? _diagnoseBoost(List<LogPoint> pts, List<PullSegment> pulls, List<LogPoint> pullPts,
-      {required bool isDiesel}) {
+      {required bool isDiesel, Set<String> dtcs = const {}}) {
     if (pullPts.length < 5 || !_has(pullPts, "BOOST")) return null;
     final hasTarget = _has(pullPts, "TARGET_BOOST");
     final minRpm = isDiesel ? 1600.0 : 2000.0;
@@ -240,7 +243,21 @@ class DriveAnalyzer {
       }
     }
 
-    if (overPts.length >= 4) return _overboost(pts, overPts);
+    // Zapieczona geometria turbiny bez czujnika jej pozycji: na niskich obrotach turbo
+    // przeładowuje (kierownice zamknięte), a na wysokich nie nadąża (nie mogą się otworzyć/ustawić)
+    final lowOver = overPts.where((p) => (p.values["RPM"] ?? 0) < 2500).length;
+    final highDeficit = deficitPts.where((p) => (p.values["RPM"] ?? 0) >= 2500).length;
+    final stickyPattern = lowOver >= 3 && highDeficit >= 5;
+    if (!stickyPattern && overPts.length >= 4) return _overboost(pts, overPts);
+
+    // Sterownik sam zapisał niedoładowanie (P0299), choć nie udostępnia zadanego ciśnienia —
+    // oceniamy wtedy cały zakres pełnego gazu
+    final ecuUnderboost = dtcs.contains("P0299");
+    if (deficitPts.length < 5 && ecuUnderboost && !hasTarget) {
+      deficitPts
+        ..clear()
+        ..addAll(evalPts.where((p) => (p.values["RPM"] ?? 0) >= 2000));
+    }
     if (deficitPts.length < 5) return null;
 
     // --- Opis objawu: w jakim zakresie obrotów i o ile brakuje ---
@@ -383,6 +400,27 @@ class DriveAnalyzer {
       dpf.add(0.5, "Diesel bez odczytu DPF — nie można wykluczyć zapchanego filtra");
     }
     turbo.add(0.5, "Możliwe zawsze, gdy inne przyczyny zostaną wykluczone");
+
+    if (stickyPattern) {
+      vgt.add(4, "Na niskich obrotach turbo przeładowuje ($lowOver próbek powyżej zadanego), a na wysokich nie nadąża — typowy objaw zapieczonych (zanieczyszczonych nagarem) kierownic turbiny");
+      leak.add(-1, "Przeładowanie na niskich obrotach wyklucza nieszczelność jako główną przyczynę");
+      correlated["Wzorzec"] = "przeładowanie poniżej 2500 obr/min, niedoładowanie powyżej";
+    }
+
+    // Kody błędów ze sterownika jako dodatkowe dowody
+    if (ecuUnderboost) correlated["DTC"] = "P0299 — sterownik sam potwierdził niedoładowanie";
+    if (dtcs.contains("P2002") || dtcs.contains("P2463") || dtcs.contains("P244A") || dtcs.contains("P244B")) {
+      dpf.add(2, "Sterownik zapisał kod dotyczący DPF (${dtcs.where((c) => ["P2002", "P2463", "P244A", "P244B"].contains(c)).join(', ')})");
+    }
+    if (dtcs.any((c) => ["P2562", "P2563", "P0045", "P0046", "P0047", "P0048", "P0049", "P2261"].contains(c))) {
+      vgt.add(2, "Sterownik zapisał kod sterowania turbiną (${dtcs.where((c) => ["P2562", "P2563", "P0045", "P0046", "P0047", "P0048", "P0049", "P2261"].contains(c)).join(', ')})");
+    }
+    if (dtcs.any((c) => ["P0400", "P0401", "P0402", "P0403", "P0404", "P0405", "P0406", "P0409"].contains(c))) {
+      egr.add(1.5, "Sterownik zapisał kod układu EGR (${dtcs.where((c) => c.startsWith("P040")).join(', ')})");
+    }
+    if (dtcs.any((c) => ["P0101", "P0102", "P0103"].contains(c))) {
+      correlated["Uwaga"] = "kod przepływomierza (${dtcs.where((c) => c.startsWith("P010")).join(', ')}) — odczyty MAF mogą być niewiarygodne";
+    }
 
     final causes = [dpf, leak, vgt, egr, intake, turbo]..sort((a, b) => b.score.compareTo(a.score));
     final top = causes.first;
@@ -622,90 +660,328 @@ class DriveAnalyzer {
   }
 
   // ---------------------------------------------------------------------------
-  // Ciśnienie paliwa: zadane vs rzeczywiste
+  // Ciśnienie paliwa — wzorzec: jałowy vs obciążenie, korekty paliwa, cylinder
   // ---------------------------------------------------------------------------
 
-  static Anomaly? _diagnoseRail(List<LogPoint> pts, List<LogPoint> pullPts, {required bool isDiesel}) {
-    final running = pts.where((p) => (p.values["RPM"] ?? 0) >= 600 && p.values.containsKey("F_RAIL") && p.values.containsKey("RAIL_TGT")).toList();
+  /// Który cylinder wypada z zapłonu — tylko z danych: przyrost liczników Mode 06
+  /// (lub wyraźnie najwyższy licznik) albo kod P030x. Zwraca (cylinder, źródło).
+  static (int, String)? _misfireCylinder(List<LogPoint> pts, Set<String> dtcs) {
+    final score = <int, double>{};
+    for (int cyl = 1; cyl <= 8; cyl++) {
+      final v = [for (final p in pts) if (p.values.containsKey("MIS_$cyl")) p.values["MIS_$cyl"]!];
+      if (v.isEmpty) continue;
+      final increase = v.last - v.first;
+      score[cyl] = increase > 0 ? increase : v.reduce(max);
+    }
+    if (score.isNotEmpty) {
+      final sorted = score.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+      final best = sorted.first;
+      final second = sorted.length > 1 ? sorted[1].value : 0.0;
+      if (best.value >= 3 && best.value >= 2 * second) {
+        return (best.key, "licznik wypadania zapłonów cylindra ${best.key}: ${best.value.toStringAsFixed(0)} (Mode 06)");
+      }
+    }
+    final cylCodes = dtcs.where((c) => RegExp(r'^P030[1-8]$').hasMatch(c)).toList();
+    if (cylCodes.length == 1) {
+      final cyl = int.parse(cylCodes.single.substring(4));
+      return (cyl, "kod błędu ${cylCodes.single} (wypadanie zapłonu cylindra $cyl)");
+    }
+    return null;
+  }
+
+  static Anomaly? _diagnoseFuelPressure(List<LogPoint> pts, {required bool isDiesel, Set<String> dtcs = const {}}) {
+    final running = pts.where((p) => (p.values["RPM"] ?? 0) >= 500 && p.values.containsKey("F_RAIL")).toList();
     if (running.length < 8) return null;
-    final minAbs = isDiesel ? 80.0 : 8.0;
+    final hasTarget = running.any((p) => p.values.containsKey("RAIL_TGT"));
+    final maxRail = running.map((p) => p.values["F_RAIL"]!).reduce(max);
+    // Wtrysk pośredni (ok. 3-5 bar) — progi dla wtrysku bezpośredniego nie mają zastosowania
+    if (!isDiesel && !hasTarget && maxRail < 15) return null;
 
-    bool low(LogPoint p) {
-      final t = p.values["RAIL_TGT"]!;
+    bool isIdle(LogPoint p) => DriveState.isIdle(p.values, isDiesel: isDiesel);
+    bool isLoad(LogPoint p) =>
+        DriveState.isFullThrottle(p.values, isDiesel: isDiesel) || (p.values["LOAD"] ?? 0) >= 70;
+
+    bool isLow(LogPoint p) {
       final a = p.values["F_RAIL"]!;
-      return t - a > max(minAbs, 0.1 * t);
+      final t = p.values["RAIL_TGT"];
+      if (t != null) return t - a > max(isDiesel ? 80.0 : 8.0, 0.1 * t);
+      // Bez wartości zadanej: orientacyjne minimum dla wtrysku bezpośredniego
+      if (isIdle(p)) return isDiesel ? a < 180 : a < 25;
+      if (isLoad(p) && (p.values["RPM"] ?? 0) >= 2000) return isDiesel ? a < 700 : a < 50;
+      return false;
     }
 
-    bool high(LogPoint p) {
-      final t = p.values["RAIL_TGT"]!;
-      final a = p.values["F_RAIL"]!;
-      return a - t > max(minAbs, 0.1 * t);
+    bool isHigh(LogPoint p) {
+      final t = p.values["RAIL_TGT"];
+      if (t == null) return false;
+      return p.values["F_RAIL"]! - t > max(isDiesel ? 80.0 : 8.0, 0.1 * t);
     }
 
-    final lowPts = running.where(low).toList();
-    final highPts = running.where(high).toList();
-    if (lowPts.length < 6 && highPts.length < 6) return null;
+    final idle = running.where(isIdle).toList();
+    final load = running.where(isLoad).toList();
+    double frac(List<LogPoint> l, bool Function(LogPoint) f) => l.isEmpty ? 0 : l.where(f).length / l.length;
+    final idleLow = idle.length >= 5 && frac(idle, isLow) >= 0.5;
+    final loadLow = load.length >= 3 && frac(load, isLow) >= 0.5;
+    final loadOk = load.length >= 3 && frac(load, isLow) < 0.3;
+    final highPts = running.where(isHigh).toList();
+    final ecuConfirms = dtcs.contains("P0087") || dtcs.contains("P0093") || dtcs.contains("P2293");
 
-    final isLow = lowPts.length >= highPts.length;
-    final bad = isLow ? lowPts : highPts;
-    final t = _mean(bad, "RAIL_TGT")!;
-    final a = _mean(bad, "F_RAIL")!;
-    final underLoad = bad.where((p) => DriveState.isFullThrottle(p.values, isDiesel: isDiesel)).length;
-    final atIdle = bad.where((p) => DriveState.isIdle(p.values, isDiesel: isDiesel)).length;
-    final loadRelated = underLoad >= bad.length * 0.5;
-
-    final String cause;
-    final List<String> hyp;
-    if (!isLow) {
-      cause = "Regulator ciśnienia nie upuszcza paliwa (zawór regulacyjny / zawór dozujący)";
-      hyp = ["Zacięty zawór regulacji ciśnienia na szynie lub pompie", "Uszkodzony czujnik ciśnienia na szynie"];
-    } else if (loadRelated) {
-      cause = "Za mała wydajność zasilania paliwem pod obciążeniem";
-      hyp = [
-        "Zapchany filtr paliwa (najczęstsza i najtańsza przyczyna)",
-        "Słaba pompa wstępna (w baku) lub zapowietrzenie układu",
-        "Zużyta pompa wysokiego ciśnienia",
-      ];
+    String pattern;
+    if (idleLow && !loadLow) {
+      pattern = "idle";
+    } else if (loadLow) {
+      pattern = "load";
+    } else if (highPts.length >= 6) {
+      pattern = "over";
+    } else if (ecuConfirms && frac(running, isLow) >= 0.15) {
+      pattern = "intermittent";
     } else {
-      cause = "Ubytek ciśnienia także przy małym obciążeniu (nieszczelność / przelewy)";
-      hyp = [
-        "Duże przelewy wtryskiwaczy (zużyty wtryskiwacz)",
-        "Nieszczelny zawór regulacyjny ciśnienia",
-        "Zużyta pompa wysokiego ciśnienia",
-      ];
+      return null;
     }
+
+    final bad = pattern == "over"
+        ? highPts
+        : running.where(isLow).toList();
+    if (bad.isEmpty) return null;
+    final idleMean = _mean(idle, "F_RAIL");
+    final idleTarget = _mean(idle, "RAIL_TGT");
+    final loadMean = _mean(load.where((p) => (p.values["RPM"] ?? 0) >= 2000), "F_RAIL");
+    final loadTarget = _mean(load.where((p) => (p.values["RPM"] ?? 0) >= 2000), "RAIL_TGT");
+
+    // Korekty paliwa na jałowym: ujemne = do cylindrów dostaje się paliwo poza kontrolą sterownika
+    final stft = _mean(idle, "STFT");
+    final ltft = _mean(idle, "LTFT");
+    final trim = (stft ?? 0) + (ltft ?? 0);
+    final hasTrim = stft != null || ltft != null;
+    final cylinder = _misfireCylinder(pts, dtcs);
+    final idleRpm = [for (final p in idle) p.values["RPM"]!];
+    double rpmStd = 0;
+    if (idleRpm.length >= 5) {
+      final m = idleRpm.reduce((a, b) => a + b) / idleRpm.length;
+      rpmStd = sqrt(idleRpm.map((r) => (r - m) * (r - m)).reduce((a, b) => a + b) / idleRpm.length);
+    }
+
+    final correlated = <String, String>{
+      if (idleMean != null) "Jałowy": "${_f(idleMean, 0)} bar${idleTarget != null ? ' (zadane ${_f(idleTarget, 0)} bar)' : ''}",
+      if (loadMean != null) "Obciążenie": "${_f(loadMean, 0)} bar${loadTarget != null ? ' (zadane ${_f(loadTarget, 0)} bar)' : ''}",
+      if (hasTrim) "Korekty na jałowym": "${trim >= 0 ? '+' : ''}${_f(trim, 1)}% (${trim <= -8 ? 'mieszanka za bogata' : trim >= 8 ? 'mieszanka za uboga' : 'w normie'})",
+      if (cylinder != null) "Cylinder": cylinder.$2,
+      if (rpmStd >= 25) "Bieg jałowy": "nierówny (wahania ±${_f(rpmStd, 0)} obr/min)",
+      if (dtcs.isNotEmpty) "Kody": dtcs.where((c) => c.startsWith("P0") || c.startsWith("P2")).join(", "),
+    };
+
+    final causes = <_Cause>[];
+    final cylTxt = cylinder != null ? " cylindra ${cylinder.$1}" : "";
+    if (pattern == "idle" || pattern == "intermittent") {
+      if (!isDiesel) {
+        final injector = _Cause("injector", "Lejący wtryskiwacz$cylTxt")..add(2, "Ciśnienie spada, gdy pompa podaje mało paliwa (jałowy), a pod obciążeniem jest w normie — paliwo ucieka z szyny");
+        final regulator = _Cause("regulator", "Nieszczelny zawór regulacji ciśnienia na pompie wysokiego ciśnienia")..add(1.5, "Spadek ciśnienia przy małym wydatku pasuje też do wewnętrznego przecieku zaworu regulacyjnego");
+        final pump = _Cause("pump", "Zużyta pompa wysokiego ciśnienia / popychacz na wałku rozrządu")..add(0.5, "Możliwe, choć zużycie pompy zwykle bardziej widać pod obciążeniem");
+        final sensor = _Cause("sensor", "Błędny odczyt czujnika ciśnienia paliwa");
+        if (hasTrim && trim <= -8) {
+          injector.add(3, "Sterownik ujmuje paliwa (korekty ${_f(trim, 1)}%) — do cylindrów dostaje się paliwo, którego nie wtrysnął");
+          regulator.add(-1, "Przeciek w pompie nie wzbogacałby mieszanki — a mieszanka jest za bogata");
+        } else if (hasTrim && trim >= 8) {
+          injector.add(-2, "Mieszanka jest za uboga (korekty +${_f(trim, 1)}%) — lejący wtrysk wzbogacałby ją");
+          regulator.add(1, "Za uboga mieszanka przy niskim ciśnieniu pasuje do problemu z podawaniem paliwa");
+          pump.add(1, "Za uboga mieszanka przy niskim ciśnieniu pasuje do słabego podawania paliwa");
+        }
+        if (cylinder != null) injector.add(2, "Wypada zapłon jednego cylindra (${cylinder.$2}) — zalewany cylinder nie odpala");
+        if (dtcs.contains("P0172") || dtcs.contains("P0175")) injector.add(1, "Sterownik zapisał kod „mieszanka za bogata”");
+        if (dtcs.contains("P0171") || dtcs.contains("P0174")) regulator.add(1, "Sterownik zapisał kod „mieszanka za uboga”");
+        if (rpmStd >= 25) injector.add(0.5, "Nierówny bieg jałowy");
+        if (dtcs.any((c) => ["P0190", "P0191", "P0192", "P0193"].contains(c))) sensor.add(3.5, "Sterownik zapisał kod czujnika ciśnienia paliwa");
+        if (loadOk) pump.add(-0.5, "Pod obciążeniem pompa utrzymuje ciśnienie");
+        causes.addAll([injector, regulator, pump, sensor]);
+      } else {
+        final leakoff = _Cause("leakoff", "Za duże przelewy wtryskiwaczy (zużyty wtryskiwacz$cylTxt)")..add(2.5, "Ciśnienie spada przy małym wydatku pompy — paliwo ucieka przelewami");
+        final regulator = _Cause("regulator", "Nieszczelny zawór regulacji ciśnienia na szynie / pompie")..add(1.5, "Przeciek zaworu regulacyjnego daje ten sam objaw");
+        final supply = _Cause("supply", "Zapowietrzenie lub słabe zasilanie wstępne (filtr, pompa w baku)")..add(1, "Możliwe przy małych obrotach pompy");
+        if (dtcs.contains("P0093")) leakoff.add(2, "Sterownik zapisał kod P0093 (wykryto wyciek paliwa)");
+        if (cylinder != null) leakoff.add(1, "Problem z jednym cylindrem (${cylinder.$2})");
+        causes.addAll([leakoff, regulator, supply]);
+      }
+    } else if (pattern == "load") {
+      final filter = _Cause("filter", "Zapchany filtr paliwa / słaba pompa wstępna (w baku)")..add(2.5, "Ciśnienie spada, gdy silnik potrzebuje najwięcej paliwa — brakuje dopływu do pompy wysokiego ciśnienia");
+      final hpPump = _Cause("pump", "Zużyta pompa wysokiego ciśnienia${isDiesel ? '' : ' / popychacz na wałku rozrządu'}")..add(1.5, "Pompa może nie nadążać przy dużym wydatku");
+      if (!isDiesel && hasTrim && trim >= 8) filter.add(1, "Mieszanka za uboga — brakuje paliwa");
+      if (idle.length >= 5 && frac(idle, isLow) < 0.3) hpPump.add(0.5, "Na jałowym ciśnienie w normie — przy małym wydatku pompa daje radę");
+      causes.addAll([filter, hpPump]);
+    } else {
+      causes.add(_Cause("over", "Zawór regulacji ciśnienia nie upuszcza paliwa")..add(3, "Ciśnienie wyższe od zadanego"));
+      causes.add(_Cause("sensor", "Błędny odczyt czujnika ciśnienia paliwa")..add(1.5, "Możliwe przy braku innych objawów"));
+    }
+
+    causes.sort((a, b) => b.score.compareTo(a.score));
+    final top = causes.first;
+    final confident = top.score >= 3 && (causes.length < 2 || top.score - causes[1].score >= 1);
+
+    final String symptom;
+    switch (pattern) {
+      case "idle":
+        symptom = "Ciśnienie paliwa spada na wolnych obrotach (średnio ${_f(idleMean ?? 0, 0)} bar${idleTarget != null ? ' zamiast zadanych ${_f(idleTarget, 0)} bar' : isDiesel ? ', typowo ok. 250-350 bar' : ', typowo ok. 35-50 bar'})${loadOk ? ', a pod obciążeniem jest w normie' : ''}.";
+      case "load":
+        symptom = "Ciśnienie paliwa jest za niskie pod obciążeniem (średnio ${_f(loadMean ?? _mean(bad, "F_RAIL")!, 0)} bar${loadTarget != null ? ' zamiast zadanych ${_f(loadTarget, 0)} bar' : ''}).";
+      case "over":
+        symptom = "Ciśnienie paliwa jest wyższe od zadanego (średnio ${_f(_mean(bad, "F_RAIL")!, 0)} bar przy zadanych ${_f(_mean(bad, "RAIL_TGT")!, 0)} bar).";
+      default:
+        symptom = "Ciśnienie paliwa okresowo spada poniżej normy (${bad.length} z ${running.length} próbek), a sterownik zapisał kod ciśnienia paliwa.";
+    }
+
+    final extra = <String>[];
+    if (!isDiesel && hasTrim && trim <= -8) extra.add("Sterownik ujmuje paliwa (korekty ${_f(trim, 1)}%), bo mieszanka jest za bogata.");
+    if (cylinder != null) extra.add("Wypada zapłon cylindra ${cylinder.$1}.");
+    final String plain;
+    if (top.id == "injector" && confident) {
+      plain = "$symptom ${extra.join(' ')} To typowy obraz lejącego wtryskiwacza${cylTxt.isEmpty ? '' : cylTxt}: paliwo przecieka z szyny prosto do cylindra. "
+          "${cylinder == null ? 'Którego cylindra — z tych danych nie wynika; sprawdź korekty poszczególnych cylindrów w diagnostyce producenta albo świece. ' : ''}"
+          "Nie wymieniaj pompy wysokiego ciśnienia w ciemno — najpierw sprawdź wtryskiwacz.";
+    } else if (confident) {
+      plain = "$symptom ${extra.join(' ')} Najbardziej prawdopodobna przyczyna: ${top.name.toLowerCase()}.";
+    } else {
+      plain = "$symptom ${extra.join(' ')} Możliwe przyczyny: ${causes.where((c) => c.score > 0).take(3).map((c) => c.name.toLowerCase()).join('; ')}.";
+    }
+
+    final id = switch (pattern) {
+      "idle" => "rail_low_idle_${cylinder != null ? 'cyl${cylinder.$1}_' : ''}${bad.first.timeMs.toInt()}",
+      "load" => "rail_low_load_${bad.first.timeMs.toInt()}",
+      "over" => "rail_over_${bad.first.timeMs.toInt()}",
+      _ => "rail_low_${bad.first.timeMs.toInt()}",
+    };
 
     return Anomaly(
-      id: "${isLow ? 'rail_deficit' : 'rail_over'}_${bad.first.timeMs.toInt()}",
-      title: isLow ? "Ciśnienie paliwa niższe od zadanego" : "Ciśnienie paliwa wyższe od zadanego",
+      id: id,
+      title: pattern == "over"
+          ? "Ciśnienie paliwa wyższe od zadanego"
+          : confident
+              ? "Za niskie ciśnienie paliwa — ${top.name}"
+              : "Za niskie ciśnienie paliwa",
       severity: AnomalySeverity.critical,
       paramKey: "F_RAIL",
       startMs: bad.first.timeMs,
       endMs: bad.last.timeMs,
       startRpm: bad.map((p) => p.values["RPM"]!).reduce(min),
       endRpm: bad.map((p) => p.values["RPM"]!).reduce(max),
-      observedValueText: "Średnio ${_f(a, 0)} bar przy zadanych ${_f(t, 0)} bar",
-      primarySymptom: "Sterownik żąda ${_f(t, 0)} bar na szynie, a pompa daje ${_f(a, 0)} bar${loadRelated ? ' — głównie pod pełnym obciążeniem' : ''}.",
-      correlatedSignals: {
-        "RAIL_TGT": "${_f(t, 0)} bar zadane",
-        "F_RAIL": "${_f(a, 0)} bar rzeczywiste",
-        "Kiedy": loadRelated ? "pod pełnym gazem ($underLoad z ${bad.length} próbek)" : "także przy małym obciążeniu (jałowy: $atIdle próbek)",
-      },
-      plainSummary: isLow
-          ? "Do silnika dociera za mało paliwa pod ciśnieniem${loadRelated ? ' przy mocnym przyspieszaniu' : ''}. ${loadRelated ? 'Zacznij od wymiany filtra paliwa — to najtańsza i najczęstsza przyczyna.' : 'Sprawdź przelewy wtryskiwaczy i zawór regulacyjny.'}"
-          : "Ciśnienie paliwa jest wyższe niż powinno — regulator nie upuszcza paliwa.",
-      rootCauseConclusion: cause,
-      description: "Porównanie ciśnienia zadanego przez sterownik z rzeczywistym na szynie wtryskowej.",
-      hypotheses: hyp,
-      recommendations: isLow
-          ? [
-              if (loadRelated) "Wymień filtr paliwa i odpowietrz układ.",
-              "Zmierz ciśnienie pompy wstępnej.",
-              if (isDiesel) "Wykonaj test przelewów wtryskiwaczy.",
-              "Powtórz pomiar przyspieszenia po naprawie.",
-            ]
-          : ["Sprawdź zawór regulacyjny ciśnienia i czujnik ciśnienia na szynie."],
+      observedValueText: symptom,
+      primarySymptom: symptom,
+      correlatedSignals: correlated,
+      plainSummary: plain,
+      falseLeadWarning: pattern == "idle"
+          ? "Kod P0087 często kończy się wymianą pompy wysokiego ciśnienia. Gdy ciśnienie spada tylko na jałowym, a pod obciążeniem jest dobre, pompa zwykle jest sprawna — paliwo ucieka inną drogą."
+          : null,
+      ruledOutCauses: [
+        for (final c in causes)
+          for (final e in c.evidenceAgainst) "${c.name}: $e",
+      ],
+      rootCauseConclusion: [
+        "${top.name} (pewność: ${_confidence(top, causes)}).",
+        ...top.evidenceFor.map((e) => "• $e"),
+      ].join("\n"),
+      description: "$symptom Aplikacja porównała ciśnienie na wolnych obrotach i pod obciążeniem, korekty paliwa, "
+          "liczniki wypadania zapłonów poszczególnych cylindrów i zapisane kody błędów.",
+      hypotheses: [
+        for (final c in causes.where((c) => c.score > 0)) "${c.name} — ${_confidence(c, causes)}",
+      ],
+      recommendations: _fuelRecommendations(top.id, cylinder?.$1, isDiesel: isDiesel),
     );
+  }
+
+  static List<String> _fuelRecommendations(String id, int? cyl, {required bool isDiesel}) {
+    final c = cyl != null ? " $cyl" : "";
+    switch (id) {
+      case "injector":
+        return [
+          "Wykręć świecę cylindra${cyl != null ? ' $cyl' : ' podejrzanego cylindra'} po postoju: mokra, czarna i pachnąca benzyną = lejący wtryskiwacz.",
+          "W diagnostyce producenta (np. VCDS/ODIS) porównaj korekty poszczególnych cylindrów — cylinder z lejącym wtryskiem ma wyraźnie inną korektę.",
+          "Próba szczelności: po zgaszeniu ciepłego silnika ciśnienie na szynie nie powinno szybko spadać do zera.",
+          "Sprawdź olej — jeśli pachnie benzyną lub przybywa go, wymień olej po naprawie (paliwo rozcieńcza film olejowy).",
+          "Wymień wtryskiwacz$c (z nowymi uszczelkami/pierścieniem teflonowym); pompy nie ruszaj, jeśli pod obciążeniem ciśnienie jest dobre.",
+        ];
+      case "leakoff":
+        return [
+          "Wykonaj test przelewów wtryskiwaczy (porównanie ilości paliwa z przelewów każdego wtryskiwacza).",
+          "Sprawdź zawór regulacji ciśnienia i szczelność przewodów wysokiego ciśnienia.",
+        ];
+      case "regulator":
+        return [
+          "Sprawdź zawór regulacji ciśnienia (${isDiesel ? 'na szynie/pompie' : 'N276 lub odpowiednik na pompie'}) — test w diagnostyce producenta.",
+          "Wyklucz lejący wtryskiwacz: świece, korekty poszczególnych cylindrów.",
+        ];
+      case "filter":
+        return [
+          "Wymień filtr paliwa (najtańsza i najczęstsza przyczyna).",
+          "Zmierz ciśnienie pompy wstępnej w baku.",
+          if (isDiesel) "Sprawdź, czy układ nie zasysa powietrza (przezroczysty przewód przed filtrem).",
+          "Jeśli po wymianie filtra problem zostaje — sprawdź pompę wysokiego ciśnienia.",
+        ];
+      case "pump":
+        return [
+          "Zmierz ciśnienie zasilania wstępnego, żeby wykluczyć filtr i pompę w baku.",
+          if (!isDiesel) "Sprawdź popychacz (szklankę) pompy wysokiego ciśnienia na wałku rozrządu.",
+          "Dopiero po wykluczeniu powyższych — pompa wysokiego ciśnienia.",
+        ];
+      case "sensor":
+        return ["Sprawdź czujnik ciśnienia paliwa i jego wtyczkę/przewody."];
+      default:
+        return ["Sprawdź zawór regulacji ciśnienia i czujnik ciśnienia na szynie."];
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Kody błędów bez potwierdzenia w logu
+  // ---------------------------------------------------------------------------
+
+  /// Grupy kodów: jakie kanały/wnioski je potwierdzają i co nagrać, żeby Asystent mógł je ocenić.
+  static const List<(List<String>, List<String>, String)> _dtcGroups = [
+    (["P0087", "P0088", "P0093", "P0190", "P0191", "P0192", "P0193", "P2293"], ["F_RAIL"],
+        "ciśnienie paliwa na wolnych obrotach i podczas mocnego przyspieszenia (profil „Paliwo, mieszanka i zapłon”)"),
+    (["P0299", "P0234", "P0235", "P0236", "P0237", "P0238", "P2562", "P2563", "P0045", "P0046", "P0047", "P0048", "P0049"], ["BOOST", "TARGET_BOOST", "VGT_ACT", "WG_ACT"],
+        "przyspieszenie na pełnym gazie od ok. 1500 obr/min (tryb „Przyspieszenie”)"),
+    (["P2002", "P2463", "P244A", "P244B", "P2452", "P2453", "P2454", "P2455"], ["DPF_DP"],
+        "10-15 minut jazdy z jednym mocnym przyspieszeniem (profil „Turbo, DPF i przepływ spalin”)"),
+    (["P0400", "P0401", "P0402", "P0403", "P0404", "P0405", "P0406", "P0409"], ["EGR_ACT", "EGR_CMD"],
+        "spokojną jazdę i wolne obroty (profil „Diagnostyka automatyczna”)"),
+    (["P0300", "P0301", "P0302", "P0303", "P0304", "P0305", "P0306", "P0307", "P0308"], ["MIS_1", "MIS_2", "MIS_3", "MIS_4", "F_RAIL"],
+        "wolne obroty przez 1-2 minuty oraz jedno przyspieszenie (liczniki wypadania zapłonów i korekty paliwa)"),
+    (["P0171", "P0172", "P0174", "P0175"], ["STFT", "LTFT", "F_RAIL", "MAF"],
+        "wolne obroty i spokojną jazdę (korekty paliwa, przepływ powietrza)"),
+    (["P0100", "P0101", "P0102", "P0103"], ["MAF", "BOOST"],
+        "przyspieszenie na pełnym gazie (przepływ powietrza względem doładowania)"),
+  ];
+
+  static List<Anomaly> _unconfirmedDtcs(List<LogPoint> pts, Set<String> dtcs, List<Anomaly> found) {
+    final out = <Anomaly>[];
+    final foundKeys = found.map((a) => a.paramKey).toSet();
+    for (final code in dtcs) {
+      final group = _dtcGroups.where((g) => g.$1.contains(code)).firstOrNull;
+      if (group == null) continue;
+      final (_, keys, whatToLog) = group;
+      // Kod już wyjaśniony przez analizę logu (np. P0087 przez diagnozę ciśnienia paliwa)
+      if (keys.any(foundKeys.contains)) continue;
+      if (code.startsWith("P030") && found.any((a) => a.id.startsWith("rail_low_idle_"))) continue;
+      final hasData = keys.any((k) => _has(pts, k));
+      final info = DtcCode.getByCode(code);
+      out.add(Anomaly(
+        id: "dtc_$code",
+        title: "Kod $code: ${info.title}",
+        severity: AnomalySeverity.warning,
+        paramKey: "DTC",
+        startMs: pts.first.timeMs,
+        endMs: pts.last.timeMs,
+        startRpm: 0,
+        endRpm: 0,
+        observedValueText: hasData
+            ? "W tym logu parametry były w normie — usterka może występować okresowo"
+            : "Ten log nie zawiera danych potrzebnych do oceny kodu",
+        plainSummary: hasData
+            ? "Sterownik zapisał kod $code, ale w tym logu objawu nie było widać. Usterka może pojawiać się tylko w określonych warunkach — nagraj $whatToLog, najlepiej wtedy, gdy problem występuje."
+            : "Sterownik zapisał kod $code. Żeby Asystent mógł wskazać przyczynę, nagraj $whatToLog.",
+        description: info.description,
+        hypotheses: info.commonCauses,
+        recommendations: ["Nagraj: $whatToLog.", ...info.diagnosticsSteps],
+      ));
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------------------

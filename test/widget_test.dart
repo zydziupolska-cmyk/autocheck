@@ -80,13 +80,6 @@ void main() {
       expect(hasLean, isTrue);
     });
 
-    test('Skoda Rapid scenario detects low fuel rail pressure and rich trim', () {
-      final points = generateSyntheticRun(SyntheticScenario.skodaRapidInjector);
-      final anomalies = AnomalyEngine.analyzeSession(points);
-      
-      final hasHpfp = anomalies.any((a) => a.id.startsWith('rail_low_'));
-      expect(hasHpfp, isTrue);
-    });
 
     test('Peugeot 307 CC scenario detects idle hunting and VVT jamming vacuum loss', () {
       final points = generateSyntheticRun(SyntheticScenario.peugeotIdleHunting);

@@ -152,8 +152,8 @@ void main() {
 
   test('ciśnienie paliwa poniżej zadanego pod obciążeniem → filtr/zasilanie', () {
     final all = DriveAnalyzer.analyze(pull(Fault.railLoad), isDiesel: true);
-    final rail = all.firstWhere((a) => a.id.startsWith("rail_deficit_"));
-    expect(rail.plainSummary, contains("filtra paliwa"));
+    final rail = all.firstWhere((a) => a.id.startsWith("rail_low_load_"));
+    expect(rail.plainSummary, contains("filtr paliwa"));
     expect(boostDiag(all), isNull);
   });
 

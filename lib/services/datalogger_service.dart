@@ -293,8 +293,36 @@ class DataloggerService extends ChangeNotifier {
       _sessionsHistory.removeWhere((s) => s.id == session.id);
       _sessionsHistory.insert(0, session);
       if (persistHistory) _saveSession(session);
+      // Kody błędów ze sterowników są dla Asystenta dodatkowym dowodem (np. P0087 + P0301)
+      if (obdService.status == ObdConnectionStatus.connected) _attachDtcs(session);
     }
     notifyListeners();
+  }
+
+  bool _readingDtcs = false;
+
+  /// Czy trwa odczyt kodów błędów po zakończeniu logu (analiza zostanie uzupełniona).
+  bool get isReadingDtcs => _readingDtcs;
+
+  Future<void> _attachDtcs(LogSession session) async {
+    _readingDtcs = true;
+    notifyListeners();
+    try {
+      final codes = await obdService.readDtcCodes();
+      if (codes == null) return;
+      final list = codes.map((c) => c.code).toSet().toList();
+      final updated = session.withDtcCodes(list);
+      final idx = _sessionsHistory.indexWhere((s) => s.id == session.id);
+      if (idx >= 0) _sessionsHistory[idx] = updated;
+      if (_activeSession?.id == session.id) {
+        _activeSession = updated;
+        _detectedAnomalies = AnomalyEngine.analyzeSession(updated.points, isDiesel: updated.isDiesel, dtcCodes: list);
+      }
+      if (persistHistory) await _saveSession(updated);
+    } finally {
+      _readingDtcs = false;
+      notifyListeners();
+    }
   }
 
   LogSession _buildSession(LogMode mode) {
@@ -326,7 +354,7 @@ class DataloggerService extends ChangeNotifier {
         aggregatedAnomalies: [], healthScore: 100,
       );
     }
-    return AnomalyEngine.generateTripReport(session.points, isDiesel: session.isDiesel);
+    return AnomalyEngine.generateTripReport(session.points, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes);
   }
 
   /// Dodaje nowy punkt pomiarowy
@@ -454,7 +482,7 @@ class DataloggerService extends ChangeNotifier {
     if (_isRecording) return;
     _activeSession = session;
     _currentPoints = List.from(session.points);
-    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: session.isDiesel);
+    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes);
     notifyListeners();
   }
 

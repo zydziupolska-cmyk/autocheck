@@ -11,7 +11,7 @@ class AnomalyEngine {
   /// [isDiesel] wyłącza reguły, które mają sens tylko w silnikach benzynowych
   /// (skład mieszanki AFR/lambda, sonda wąskopasmowa, kąt zapłonu, podciśnienie
   /// w kolektorze na biegu jałowym — diesel nie ma przepustnicy dławiącej).
-  static List<Anomaly> analyzeSession(List<LogPoint> rawPoints, {bool isDiesel = false}) {
+  static List<Anomaly> analyzeSession(List<LogPoint> rawPoints, {bool isDiesel = false, List<String> dtcCodes = const []}) {
     if (rawPoints.length < 5) return [];
     // Wolne kanały są odpytywane rzadziej — uzupełnij je ostatnią znaną wartością
     final points = DriveState.forwardFill(rawPoints);
@@ -58,8 +58,6 @@ class AnomalyEngine {
     // 12. Krzyżowa Analiza Wypadania Zapłonów (Misfire Profiler) - na pełnej sesji
     _checkMisfireRootCause(points, anomalies);
 
-    // 7. Analiza ciśnienia na listwie wysokiego ciśnienia (TSI / HPFP / Błąd P0087)
-    _checkFuelRailPressure(points, anomalies);
 
     // 8. Analiza falowania obrotów i drgań na biegu jałowym (np. Peugeot 2.0 / EVAP / MAP)
     _checkIdleHunting(points, anomalies);
@@ -73,7 +71,16 @@ class AnomalyEngine {
 
     // 13. Diagnoza różnicowa całej jazdy: doładowanie (DPF / nieszczelność / VGT / EGR / tryb
     //     awaryjny), ciśnienie paliwa zadane vs rzeczywiste, siłowniki, zapełnienie DPF, moment
-    anomalies.addAll(DriveAnalyzer.analyze(points, isDiesel: isDiesel));
+    final drive = DriveAnalyzer.analyze(points, isDiesel: isDiesel, dtcCodes: dtcCodes);
+    // Gdy analiza ciśnienia paliwa wskazała lejący wtrysk konkretnego cylindra, reguła
+    // „wypadanie zapłonu = brak iskry” dla tego cylindra byłaby mylącym tropem
+    for (final leak in drive.where((a) => a.id.startsWith("rail_low_idle_"))) {
+      final cyl = RegExp(r"_cyl(\d)").firstMatch(leak.id)?.group(1);
+      anomalies.removeWhere((a) =>
+          (a.id.startsWith("misfire_spark_") || a.id.startsWith("misfire_rich_")) &&
+          (cyl == null || a.id.startsWith("misfire_spark_${cyl}_") || a.id.startsWith("misfire_rich_${cyl}_")));
+    }
+    anomalies.addAll(drive);
 
     return anomalies;
   }
@@ -678,60 +685,6 @@ class AnomalyEngine {
     }
   }
 
-  /// Sprawdza ciśnienie na szynie paliwowej (Bieg jałowy i obciążenie TSI / DI - Błąd P0087)
-  static void _checkFuelRailPressure(List<LogPoint> points, List<Anomaly> anomalies) {
-    if (!points.any((p) => p.values.containsKey("F_RAIL"))) return;
-
-    // Sprawdzenie na niskich obrotach / biegu jałowym (obroty < 2200 RPM lub TPS < 25%)
-    // Pomijamy punkty z wyłączonym silnikiem / rozruchem (RPM < 500), gdzie niskie ciśnienie jest normalne
-    final lowRpmPoints = points.where((p) => p.rpm >= 500 && (p.rpm <= 2200 || p.tps <= 25) && p.has("F_RAIL")).toList();
-    if (lowRpmPoints.isNotEmpty) {
-      final minPressure = lowRpmPoints.map((p) => p.values["F_RAIL"]!).reduce(min);
-      if (minPressure < 28.0) {
-        final badPoint = lowRpmPoints.firstWhere((p) => p.values["F_RAIL"]! == minPressure);
-        anomalies.add(Anomaly(
-          id: "rail_low_${badPoint.timeMs.toInt()}",
-          title: "Zbyt niskie ciśnienie paliwa na listwie (Błąd P0087 / Lejący wtrysk)",
-          severity: AnomalySeverity.critical,
-          paramKey: "F_RAIL",
-          startMs: lowRpmPoints.first.timeMs,
-          endMs: lowRpmPoints.last.timeMs,
-          startRpm: lowRpmPoints.first.rpm,
-          endRpm: lowRpmPoints.last.rpm,
-          observedValueText: "Ciśnienie listwy: ${minPressure.toStringAsFixed(1)} bar (Norma: 35.0 - 50.0 bar)",
-          primarySymptom: "Krytyczny spadek ciśnienia paliwa do ${minPressure.toStringAsFixed(1)} bar na niskich obrotach / biegu jałowym",
-          correlatedSignals: {
-            "F_RAIL": "${minPressure.toStringAsFixed(1)} bar (wymagane min. 35-50 bar)",
-            "STFT": "${badPoint.stft.toStringAsFixed(1)}% ${badPoint.stft < -15 ? '(ECU drastycznie ucina paliwo - zalewanie!)' : ''}",
-            "RPM": "${badPoint.rpm.toInt()} obr/min",
-            "TPS": "${badPoint.tps.toInt()}%",
-          },
-          falseLeadWarning: "UWAGA NA KOSZTOWNY BŁĄD: Błąd P0087 w 70% przypadków skłania warsztaty do kosztownej wymiany pompy wysokiego ciśnienia HPFP (1500–2500 zł). W silnikach TSI pompa często jest w pełni sprawna – to nieszczelny wtryskiwacz na 1. cylindrze puszcza paliwo i rozładowuje szynę prosto do cylindra!",
-          ruledOutCauses: [
-            "Wykluczono pompę w baku (LPFP) – pod obciążeniem i na wysokich obrotach ciśnienie rośnie prawidłowo",
-            "Wykluczono zawór EVAP – spadek ciśnienia zachodzi bezpośrednio w akumulatorze szyny HPFP",
-          ],
-          rootCauseConclusion: badPoint.stft < -15
-              ? "Jednoczesny spadek ciśnienia szyny rail (${minPressure.toStringAsFixed(1)} bar) i mocno ujemna korekta paliwa (STFT ${badPoint.stft.toStringAsFixed(1)}%) jednoznacznie potwierdzają wyciek paliwa przez iglicę wtryskiwacza na 1. cylindrze."
-              : "Spadek ciśnienia spoczynkowego na listwie wysokiego ciśnienia. Sprawdź szczelność wtryskiwaczy bezpośrednich oraz popychacz szklankowy pompy HPFP.",
-          description: "W silniku z wtryskiem bezpośrednim (TSI, TFSI, GDI, dCi, CRDI) ciśnienie spoczynkowe na szynie paliwowej (HPFP/Common Rail) na wolnych obrotach powinno wynosić minimum 35-50 bar (lub więcej w dieslach). Spadek do ${minPressure.toStringAsFixed(1)} bar generuje błąd P0087 i wskazuje na niekontrolowany wyciek paliwa z szyny lub niesprawność pompy.",
-          hypotheses: [
-            "Nieszczelny / lejący wtryskiwacz na 1. cylindrze – iglica wtrysku nie domyka się i paliwo ucieka do komory spalania, powodując spadek ciśnienia spoczynkowego na listwie",
-            "Zużycie mechanicznej pompy wysokiego ciśnienia (HPFP) lub wytarty popychacz (szklanka) na wałku rozrządu",
-            "Nieszczelność wewnętrzna zaworu regulacji ciśnienia N276 na pompie HPFP",
-            "Spadek ciśnienia wstępnego z pompy w baku (LPFP) lub zapchany filtr paliwa",
-          ],
-          recommendations: [
-            "Wykręć świecę na 1. cylindrze po postoju – jeśli czuć silny zapach benzyny lub świeca jest mokra/czarna, wtrysk #1 leje.",
-            "Sprawdź korektę dawki na 1. cylindrze – lejący wtrysk powoduje mocno ujemną korektę w ECU.",
-            "Pilnie skontroluj stan i poziom oleju silnikowego – czy nie pachnie benzyną (lejący wtryskiwacz rozcieńcza olej, grożąc zatarciem panewek!).",
-            "Zdemontuj pompę wysokiego ciśnienia HPFP i skontroluj popychacz szklankowy pod kątem przetarcia.",
-          ],
-        ));
-      }
-    }
-  }
-
   /// Sprawdza falowanie obrotów i drgania na biegu jałowym (np. Peugeot 2.0 16V EW10)
   static void _checkIdleHunting(List<LogPoint> points, List<Anomaly> anomalies) {
     // Bieg jałowy: silnik pracuje (RPM > 400), gaz puszczony, auto stoi (jeśli znamy prędkość).
@@ -954,8 +907,32 @@ class AnomalyEngine {
                 "Podmień wtryskiwacz cylindra $cyl z innym (np. $cyl <-> 1) i sprawdź czy błąd przejdzie za wtryskiwaczem.",
               ],
             ));
+          } else if (totalTrim < -10.0) {
+            // Wypadanie zapłonu + mieszanka mocno BOGATA: cylinder może być zalewany
+            anomalies.add(Anomaly(
+              id: "misfire_rich_${cyl}_${p.timeMs.toInt()}",
+              title: "Wypadanie zapłonu przy bogatej mieszance - Cyl $cyl",
+              severity: AnomalySeverity.critical,
+              paramKey: misKey,
+              startMs: p.timeMs,
+              endMs: endTime,
+              startRpm: p.rpm,
+              endRpm: p.rpm,
+              observedValueText: "Misfire: ${misfires.toInt()}x | Całk. korekta paliwa: ${totalTrim.toStringAsFixed(1)}%",
+              plainSummary: "Cylinder $cyl wypada z zapłonu, a sterownik mocno ujmuje paliwa (mieszanka za bogata). To pasuje do lejącego wtryskiwacza, który zalewa cylinder $cyl, ale też do braku iskry. Sprawdź świecę cylindra $cyl: mokra i czarna = wtrysk, sucha = cewka/świeca.",
+              description: "Wypadanie zapłonu na cylindrze $cyl przy korekcie paliwa ${totalTrim.toStringAsFixed(1)}%. Ujemna korekta oznacza nadmiar paliwa: albo wtryskiwacz leje i zalewa cylinder, albo niespalone paliwo z cylindra bez iskry wzbogaca spaliny.",
+              hypotheses: [
+                "Lejący / nieszczelny wtryskiwacz cylindra $cyl (zalewanie)",
+                "Uszkodzona cewka lub świeca cylindra $cyl",
+              ],
+              recommendations: [
+                "Wykręć świecę cylindra $cyl: mokra, czarna i pachnąca paliwem = wtryskiwacz; sucha = układ zapłonowy.",
+                "Zamień cewkę z sąsiednim cylindrem — jeśli wypadanie przejdzie za cewką, winna jest cewka.",
+                "Sprawdź, czy olej nie pachnie paliwem (lejący wtrysk rozcieńcza olej).",
+              ],
+            ));
           } else {
-            // Wypadanie zapłonu + Korekta OK lub UJEMNA (brak iskry, paliwo leje się w wydech)
+            // Wypadanie zapłonu + Korekta OK lub lekko UJEMNA (brak iskry, paliwo leje się w wydech)
             anomalies.add(Anomaly(
               id: "misfire_spark_${cyl}_${p.timeMs.toInt()}",
               title: "Wypadanie Zapłonu (Brak Iskry) - Cyl $cyl",
@@ -986,7 +963,7 @@ class AnomalyEngine {
   }
 
   /// Tryb Długodystansowy - Analizuje CAŁĄ trasę i generuje zwięzły raport
-  static TripReport generateTripReport(List<LogPoint> points, {bool isDiesel = false}) {
+  static TripReport generateTripReport(List<LogPoint> points, {bool isDiesel = false, List<String> dtcCodes = const []}) {
     if (points.isEmpty) {
       return const TripReport(
         duration: Duration.zero, distanceKm: 0, totalPoints: 0,
@@ -1027,7 +1004,7 @@ class AnomalyEngine {
     final distanceKm = avgSpeed * durationHours;
 
     // 1. Zdobądź zwykłe anomalie z całej trasy
-    final List<Anomaly> rawAnomalies = analyzeSession(points, isDiesel: isDiesel);
+    final List<Anomaly> rawAnomalies = analyzeSession(points, isDiesel: isDiesel, dtcCodes: dtcCodes);
 
     // 2. Dodaj anomalie długodystansowe (Termostat, Ujemne/Dodatnie LTFT)
     // Termostat: ECT powinno być > 85C jeśli trasa trwa > 10 minut

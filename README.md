@@ -126,8 +126,23 @@ z tym samym silnikiem w chwilach, gdy doładowanie było prawidłowe — bez zna
 silnika. Każdy wniosek ma krótkie podsumowanie prostym językiem („co to znaczy”), odczyty
 pozostałych czujników, wykluczone przyczyny i zalecenia.
 
-Pozostałe analizy: ciśnienie paliwa zadane vs rzeczywiste (zasilanie pod obciążeniem vs
-nieszczelność/przelewy), nadążanie VGT/wastegate/EGR za sterownikiem, zapełnienie DPF z całej
+**Ciśnienie paliwa.** Porównywane osobno na wolnych obrotach i pod obciążeniem (z wartością
+zadaną, a gdy jej brak — z typowymi wartościami dla wtrysku bezpośredniego; wtrysk pośredni
+jest rozpoznawany i pomijany). Spadek tylko na jałowym + ujemne korekty paliwa = lejący
+wtryskiwacz (paliwo trafia do cylindra poza kontrolą sterownika); spadek pod obciążeniem =
+zasilanie (filtr, pompy). Numer cylindra podawany jest wyłącznie na podstawie danych:
+przyrostu licznika wypadania zapłonów (Mode 06) albo kodu P030x — bez nich Asystent mówi
+wprost, że cylindra nie da się ustalić.
+
+**Kody błędów.** Po zakończeniu logu aplikacja odczytuje kody (Mode 03 + 07) i zapisuje je
+w sesji. Asystent używa ich jako dowodów (np. P0299 potwierdza niedoładowanie, gdy sterownik
+nie podaje zadanego ciśnienia; P2002/P2463 wzmacniają DPF; P030x wskazuje cylinder). Kod,
+którego log nie potwierdza, dostaje osobny wpis z opisem i informacją, co nagrać.
+
+**Zapieczona geometria turbiny** jest rozpoznawana także bez czujnika pozycji VGT: przeładowanie
+na niskich obrotach i brak ciśnienia na wysokich w tym samym przyspieszeniu.
+
+Pozostałe analizy: nadążanie VGT/wastegate/EGR za sterownikiem, zapełnienie DPF z całej
 jazdy (różnica ciśnień względem przepływu), ograniczanie momentu, przeładowanie turbo,
 a także reguły z `AnomalyEngine`: cofanie zapłonu, skład mieszanki, leniwa sonda lambda,
 wypadanie zapłonów (przyrost licznika Mode 06 + korekty paliwa → brak paliwa vs brak iskry),
