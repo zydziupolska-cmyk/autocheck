@@ -9,6 +9,7 @@ import '../services/obd_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui.dart';
 import 'learning_screen.dart';
+import 'coding_screen.dart';
 
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({super.key});
@@ -570,6 +571,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
           icon: const Icon(Icons.hearing, size: 18),
           label: const Text("Nauka od testera (kabel Y)"),
         ),
+        if (obd.canScanVagModules) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CodingScreen())),
+            icon: const Icon(Icons.tune, size: 18),
+            label: const Text("Kodowanie i adaptacje (kopia zapasowa)"),
+          ),
+        ],
         if (_moduleScanSummary != null) ...[
           const SizedBox(height: 10),
           Text(_moduleScanSummary!, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5)),
