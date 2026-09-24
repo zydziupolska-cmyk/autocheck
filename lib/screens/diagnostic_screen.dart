@@ -221,6 +221,20 @@ class _AnomalyCardState extends State<AnomalyCard> {
                       ),
                     const SizedBox(height: 14),
                   ],
+                  if (a.engineNote != null) ...[
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(top: 1),
+                          child: Icon(Icons.build_circle_outlined, size: 16, color: AppTheme.info),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(a.engineNote!, style: const TextStyle(color: AppTheme.info, fontSize: 12.5, height: 1.35))),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                  ],
                   if (a.falseLeadWarning != null) ...[
                     Notice(a.falseLeadWarning!, tone: AppTheme.warn),
                     const SizedBox(height: 14),

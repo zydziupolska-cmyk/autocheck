@@ -119,6 +119,13 @@ class DataloggerService extends ChangeNotifier {
 
   bool get _isDiesel => obdService.vehicleInfo?.isDiesel ?? false;
 
+  /// Tekst do rozpoznania silnika w bazie silników (producent, opis, CALID, model, VIN).
+  String get _engineInfo {
+    final v = obdService.vehicleInfo;
+    if (v == null) return "";
+    return [v.manufacturer, v.modelName, v.engineDescription, v.calibrationId, v.ecuName, v.vin].join(" ");
+  }
+
   void setMode(LogMode mode) {
     if (_isRecording) return;
     _mode = mode;
@@ -311,7 +318,7 @@ class DataloggerService extends ChangeNotifier {
 
   void _finishSession(LogMode mode) {
     final isDiesel = _isDiesel;
-    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: isDiesel);
+    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: isDiesel, engineInfo: _engineInfo);
 
     if (_currentPoints.isNotEmpty) {
       final session = _buildSession(mode);
@@ -342,7 +349,7 @@ class DataloggerService extends ChangeNotifier {
       if (idx >= 0) _sessionsHistory[idx] = updated;
       if (_activeSession?.id == session.id) {
         _activeSession = updated;
-        _detectedAnomalies = AnomalyEngine.analyzeSession(updated.points, isDiesel: updated.isDiesel, dtcCodes: list);
+        _detectedAnomalies = AnomalyEngine.analyzeSession(updated.points, isDiesel: updated.isDiesel, dtcCodes: list, engineInfo: updated.engineInfo);
       }
       if (persistHistory) await _saveSession(updated);
     } finally {
@@ -364,6 +371,7 @@ class DataloggerService extends ChangeNotifier {
       points: List.from(_currentPoints),
       isDiesel: _isDiesel,
       vehicleLabel: info != null ? "${info.manufacturer} ${info.modelName} • ${info.vin}" : null,
+      engineInfo: _engineInfo,
       mode: mode,
     );
   }
@@ -508,7 +516,7 @@ class DataloggerService extends ChangeNotifier {
     if (_isRecording) return;
     _activeSession = session;
     _currentPoints = List.from(session.points);
-    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes);
+    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes, engineInfo: session.engineInfo);
     notifyListeners();
   }
 
@@ -583,7 +591,7 @@ class DataloggerService extends ChangeNotifier {
         : <String>{for (final p in points) ...p.values.keys}.toList();
     final anomalyCount = session == null
         ? _detectedAnomalies.length
-        : AnomalyEngine.analyzeSession(points, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes).length;
+        : AnomalyEngine.analyzeSession(points, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes, engineInfo: session.engineInfo).length;
 
     final StringBuffer buffer = StringBuffer();
     buffer.writeln(["Time_ms", "Time_s", ...keys].join(","));

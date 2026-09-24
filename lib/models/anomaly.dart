@@ -24,6 +24,7 @@ class Anomaly {
   final List<String>? ruledOutCauses; // Przyczyny wykluczone przez inne parametry
   final String? rootCauseConclusion; // Końcowy techniczny wniosek przyczynowo-skutkowy
   final String? plainSummary; // Wniosek prostym językiem dla kierowcy („co jest zepsute i co zrobić”)
+  final String? engineNote; // Notatka o typowej usterce wykrytego silnika (z bazy silników)
 
   const Anomaly({
     required this.id,
@@ -44,7 +45,31 @@ class Anomaly {
     this.ruledOutCauses,
     this.rootCauseConclusion,
     this.plainSummary,
+    this.engineNote,
   });
+
+  /// Kopia z dołączoną notatką o typowej usterce silnika.
+  Anomaly withEngineNote(String note) => Anomaly(
+        id: id,
+        title: title,
+        severity: severity,
+        paramKey: paramKey,
+        startMs: startMs,
+        endMs: endMs,
+        startRpm: startRpm,
+        endRpm: endRpm,
+        observedValueText: observedValueText,
+        description: description,
+        hypotheses: hypotheses,
+        recommendations: recommendations,
+        primarySymptom: primarySymptom,
+        correlatedSignals: correlatedSignals,
+        falseLeadWarning: falseLeadWarning,
+        ruledOutCauses: ruledOutCauses,
+        rootCauseConclusion: rootCauseConclusion,
+        plainSummary: plainSummary,
+        engineNote: note,
+      );
 
   double get startSec => startMs / 1000.0;
   double get endSec => endMs / 1000.0;

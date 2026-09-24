@@ -4,6 +4,7 @@ import '../models/log_point.dart';
 import '../models/trip_report.dart';
 import 'analysis/drive_analyzer.dart';
 import 'analysis/drive_state.dart';
+import '../models/engine_profiles.dart';
 
 class AnomalyEngine {
   /// Analizuje zebraną sesję logowania i zwraca listę wykrytych nieprawidłowości
@@ -11,7 +12,7 @@ class AnomalyEngine {
   /// [isDiesel] wyłącza reguły, które mają sens tylko w silnikach benzynowych
   /// (skład mieszanki AFR/lambda, sonda wąskopasmowa, kąt zapłonu, podciśnienie
   /// w kolektorze na biegu jałowym — diesel nie ma przepustnicy dławiącej).
-  static List<Anomaly> analyzeSession(List<LogPoint> rawPoints, {bool isDiesel = false, List<String> dtcCodes = const []}) {
+  static List<Anomaly> analyzeSession(List<LogPoint> rawPoints, {bool isDiesel = false, List<String> dtcCodes = const [], String engineInfo = ""}) {
     if (rawPoints.length < 5) return [];
     // Wolne kanały są odpytywane rzadziej — uzupełnij je ostatnią znaną wartością
     final points = DriveState.forwardFill(rawPoints);
@@ -89,7 +90,40 @@ class AnomalyEngine {
     }
     anomalies.addAll(drive);
 
-    return anomalies;
+    // Dopełnienie wiedzą o silniku: gdy anomalia pasuje do typowej wady wykrytej
+    // jednostki, dokładamy krótką notatkę „typowe dla tego silnika…”.
+    return _annotateWithEngine(anomalies, engineInfo);
+  }
+
+  /// Mapuje anomalię na obszar usterki (do dopasowania profilu silnika).
+  static FaultArea? _areaOf(Anomaly a) {
+    final id = a.id.toLowerCase();
+    if (id.startsWith("rail_low_idle") || id.contains("injector") || id.startsWith("misfire_rich")) return FaultArea.injectors;
+    if (id.startsWith("rail_")) return FaultArea.railPressure;
+    if (id.startsWith("misfire")) return FaultArea.misfire;
+    if (id.startsWith("dpf") || id.contains("dpf")) return FaultArea.dpf;
+    if (id.startsWith("egr") || id.contains("egr")) return FaultArea.egr;
+    if (id.contains("leak") || id.contains("intake")) return FaultArea.intake;
+    if (id.startsWith("vgt") || id.startsWith("underboost") || id.startsWith("boost") || a.paramKey == "BOOST") return FaultArea.turbo;
+    if (id.contains("vvt") || id.contains("timing")) return FaultArea.timing;
+    if (id.contains("knock") || id.contains("ignition")) return FaultArea.ignition;
+    if (id.contains("lean") || id.contains("afr") || id.contains("idle_hunting")) return FaultArea.mixture;
+    return null;
+  }
+
+  static List<Anomaly> _annotateWithEngine(List<Anomaly> anomalies, String engineInfo) {
+    if (engineInfo.trim().isEmpty) return anomalies;
+    final engine = EngineProfiles.detect(engineInfo);
+    if (engine == null) return anomalies;
+    return [
+      for (final a in anomalies)
+        () {
+          final area = _areaOf(a);
+          final fault = area == null ? null : engine.faultFor(area);
+          if (fault == null) return a;
+          return a.withEngineNote("Typowe dla ${engine.name}: ${fault.title}. ${fault.note}");
+        }(),
+    ];
   }
 
   /// Wykrywa okna czasowe, w których kierowca wcisnął gaz do dechy (WOT)
