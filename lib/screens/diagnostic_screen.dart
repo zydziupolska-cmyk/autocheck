@@ -6,6 +6,7 @@ import '../models/anomaly.dart';
 import '../services/datalogger_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui.dart';
+import '../models/engine_profiles.dart';
 
 class DiagnosticScreen extends StatelessWidget {
   final void Function(int tabIndex)? onNavigateToTab;
@@ -68,6 +69,7 @@ class DiagnosticScreen extends StatelessWidget {
           else ...[
             _sessionSummary(session),
             const SizedBox(height: 12),
+            ?_engineCard(session.engineInfo),
             if (anomalies.isEmpty)
               const Notice(
                 "Parametry dostępne w tym logu nie wskazują usterki. Poniżej: czego ten log nie pozwolił ocenić.",
@@ -91,6 +93,42 @@ class DiagnosticScreen extends StatelessWidget {
               ),
           ],
         ],
+      ),
+    );
+  }
+
+  /// Odniesienie: znane słabości rozpoznanego silnika (nie diagnoza z tego logu).
+  Widget? _engineCard(String engineInfo) {
+    final engine = EngineProfiles.detect(engineInfo);
+    if (engine == null) return null;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Panel(
+        padding: EdgeInsets.zero,
+        child: ExpansionTile(
+          leading: const Icon(Icons.build_circle_outlined, color: AppTheme.info),
+          title: Text(engine.name, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+          subtitle: Text("Znane słabości tego silnika (${engine.faults.length}) — ogólne, nie z tego logu",
+              style: const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+          childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+          expandedCrossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final f in engine.faults)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text("• ${f.title}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 12, top: 1),
+                      child: Text(f.note, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5, height: 1.35)),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

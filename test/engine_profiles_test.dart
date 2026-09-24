@@ -8,7 +8,12 @@ void main() {
     expect(EngineProfiles.detect("Volkswagen Touran 03L906023PJ WVGZZ")?.code, "EA189");
     expect(EngineProfiles.detect("BMW 320d N47D20")?.code, "N47");
     expect(EngineProfiles.detect("Peugeot 308 1.6 HDI 9HZ")?.code, "DV6");
-    expect(EngineProfiles.detect("Toyota Yaris benzyna")?.code, isNull);
+    expect(EngineProfiles.detect("Peugeot 208 1.2 PureTech HN05")?.code, "PSA_PURETECH");
+    expect(EngineProfiles.detect("Volkswagen Golf 1.9 TDI ALH")?.code, "VW_19_TDI");
+    expect(EngineProfiles.detect("BMW 320i N20B20")?.code, "N20");
+    expect(EngineProfiles.detect("Mercedes C180 M271")?.code, "MB_M271");
+    expect(EngineProfiles.detect("Hyundai ix35 2.0 GDI G4KD")?.code, "HK_THETA_GDI");
+    expect(EngineProfiles.detect("Fiat Punto benzyna nieznany")?.code, isNull);
   });
 
   test('anomalia doładowania na EA189 dostaje notatkę o geometrii VNT', () {
