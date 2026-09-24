@@ -23,6 +23,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   List<DtcCode>? _scannedDtcCodes;
   bool _isLoadingDtc = false;
   bool _dtcReadFailed = false;
+  String? _moduleScanProgress;
+  String? _moduleScanSummary;
 
   @override
   void initState() {
@@ -99,6 +101,28 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         AppTheme.red,
       );
     }
+  }
+
+  Future<void> _scanVagModules(ObdService obd) async {
+    setState(() {
+      _moduleScanProgress = "Przygotowanie skanu...";
+      _moduleScanSummary = null;
+    });
+    final results = await obd.scanVagModules(onProgress: (done, total, m) {
+      if (mounted) setState(() => _moduleScanProgress = "Moduł ${done + 1 > total ? total : done + 1}/$total: ${m.name}");
+    });
+    if (!mounted) return;
+    final responded = results.where((r) => r.responded).toList();
+    final withFaults = responded.where((r) => r.dtcs.isNotEmpty).toList();
+    setState(() {
+      _moduleScanProgress = null;
+      _dtcReadFailed = false;
+      _scannedDtcCodes = [for (final r in responded) ...r.dtcs];
+      _moduleScanSummary = responded.isEmpty
+          ? "Żaden moduł nie odpowiedział przez UDS — to auto prawdopodobnie używa starszego protokołu (TP2.0) dla modułów. Kody silnika odczytasz przyciskiem obok."
+          : "Odpowiedziało ${responded.length} z ${results.length} modułów: ${responded.map((r) => r.module.name).join(', ')}. "
+              "${withFaults.isEmpty ? 'Żaden nie ma zapisanych błędów.' : 'Błędy w: ${withFaults.map((r) => r.module.name).join(', ')}.'}";
+    });
   }
 
   Future<void> _clearDtc(ObdService obd) async {
@@ -646,6 +670,27 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               ),
             ],
           ),
+          if (obd.canScanVagModules) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _moduleScanProgress != null || _isLoadingDtc ? null : () => _scanVagModules(obd),
+                icon: _moduleScanProgress != null
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.manage_search, size: 18),
+                label: Text(_moduleScanProgress ?? "Skanuj wszystkie moduły (VAG)"),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.cyan,
+                  side: const BorderSide(color: AppTheme.cyan),
+                ),
+              ),
+            ),
+          ],
+          if (_moduleScanSummary != null) ...[
+            const SizedBox(height: 8),
+            Text(_moduleScanSummary!, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+          ],
           if (_dtcReadFailed) ...[
             const SizedBox(height: 12),
             const Text(

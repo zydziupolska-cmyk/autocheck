@@ -334,6 +334,27 @@ class ElmParser {
     return codes;
   }
 
+  /// Dekoduje odpowiedź UDS ReadDTCInformation / reportDTCByStatusMask
+  /// ([0x59, 0x02, maska, (DTC 3 bajty + status)...]). Zwraca (kod, bajt typu usterki, oczekujący).
+  /// Kody bez aktywnego statusu (np. tylko historia) są pomijane.
+  static List<(String, int, bool)> decodeUdsDtcs(List<int> data) {
+    var d = data;
+    // Odpowiedź „czekaj” (7F 19 78) poprzedzająca właściwą odpowiedź
+    while (d.length >= 3 && d[0] == 0x7F && d[2] == 0x78) {
+      d = d.sublist(3);
+    }
+    if (d.length < 3 || d[0] != 0x59 || d[1] != 0x02) return const [];
+    final out = <(String, int, bool)>[];
+    for (int i = 3; i + 3 < d.length; i += 4) {
+      final status = d[i + 3];
+      // bit 0 = testFailed, bit 2 = pendingDTC, bit 3 = confirmedDTC
+      if (status & 0x0D == 0) continue;
+      if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 0) continue;
+      out.add((dtcFromBytes(d[i], d[i + 1]), d[i + 2], status & 0x08 == 0));
+    }
+    return out;
+  }
+
   static String dtcFromBytes(int b1, int b2) {
     const letters = ["P", "C", "B", "U"];
     final letter = letters[(b1 & 0xC0) >> 6];

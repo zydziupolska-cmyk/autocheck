@@ -8,6 +8,7 @@ import '../models/obd_pid.dart';
 import '../models/extended_pid.dart';
 import '../models/dtc_code.dart';
 import '../models/vehicle_info.dart';
+import '../models/vag_modules.dart';
 import 'elm_parser.dart';
 
 enum ObdConnectionStatus {
@@ -899,6 +900,60 @@ class ObdService extends ChangeNotifier {
   bool get multiPidEnabled => _multiPidSupported;
 
   // ===========================================================================
+  // Skan wszystkich modułów VAG (UDS)
+  // ===========================================================================
+
+  /// Czy można wykonać skan modułów VAG (auto VAG na CAN 11-bit).
+  bool get canScanVagModules =>
+      _status == ObdConnectionStatus.connected &&
+      _bus == ObdBusType.can11 &&
+      _vehicleInfo?.profile == VehicleProfile.vag;
+
+  /// Odczytuje kody błędów ze wszystkich modułów VAG adresowanych przez UDS (usługa 19 02),
+  /// podobnie jak Auto-Scan w VCDS. Moduły, które nie odpowiadają, są pomijane — w autach
+  /// starszych platform (PQ) wiele modułów używa innego protokołu (TP2.0).
+  Future<List<ModuleScanResult>> scanVagModules({
+    void Function(int done, int total, VagModule module)? onProgress,
+    List<VagModule> modules = VagModule.all,
+  }) async {
+    final results = <ModuleScanResult>[];
+    if (!canScanVagModules) return results;
+    try {
+      // Sterowanie przepływem dla długich odpowiedzi (inne adresy niż 7E0/7E8)
+      await _sendCommand("ATFCSD300000");
+      await _sendCommand("ATFCSM1");
+      for (int i = 0; i < modules.length; i++) {
+        if (!_hasTransport) break;
+        final m = modules[i];
+        onProgress?.call(i, modules.length, m);
+        await _sendCommand("ATSH${m.requestId}");
+        _activeHeader = m.requestId;
+        await _sendCommand("ATFCSH${m.requestId}");
+        await _sendCommand("ATCRA${m.responseId}");
+        final raw = await _sendCommand("1902FF", timeout: const Duration(seconds: 3));
+        final resp = ElmParser.parse(raw, _bus).where((r) => r.ecu == m.responseId).firstOrNull;
+        if (resp == null) {
+          results.add(ModuleScanResult(m, responded: false, dtcs: const []));
+          continue;
+        }
+        final dtcs = [
+          for (final (code, ftb, pending) in ElmParser.decodeUdsDtcs(resp.data))
+            DtcCode.getByCode(code, profile: VehicleProfile.vag)
+                .withSource(ecuLabel: "${m.name} (${m.requestId}) • typ usterki ${ftb.toRadixString(16).padLeft(2, '0').toUpperCase()}", pending: pending),
+        ];
+        results.add(ModuleScanResult(m, responded: true, dtcs: dtcs));
+      }
+      if (modules.isNotEmpty) onProgress?.call(modules.length, modules.length, modules.last);
+    } finally {
+      // Przywróć normalny tryb: odbiór wszystkich ramek, domyślne sterowanie przepływem
+      await _sendCommand("ATCRA");
+      await _sendCommand("ATFCSM0");
+      _activeHeader = null;
+    }
+    return results;
+  }
+
+  // ===========================================================================
   // Kody błędów (Mode 03 / 07 / 04)
   // ===========================================================================
 
@@ -935,7 +990,7 @@ class ObdService extends ChangeNotifier {
         for (final code in ElmParser.decodeDtcs(r.data, isCan: _isCan || _bus == ObdBusType.unknown)) {
           final key = "$code@${r.ecu}";
           if (!seen.add(key)) continue; // oczekujący, który jest już zapisany
-          result.add(DtcCode.getByCode(code).withSource(ecuLabel: _ecuLabel(r.ecu), pending: pending));
+          result.add(DtcCode.getByCode(code, profile: _vehicleInfo?.profile).withSource(ecuLabel: _ecuLabel(r.ecu), pending: pending));
         }
       }
       if (mode == "03" && !anyValidResponse) return null;
@@ -1013,4 +1068,13 @@ class ObdService extends ChangeNotifier {
     _scanSub?.cancel();
     super.dispose();
   }
+}
+
+/// Wynik odczytu jednego modułu podczas skanu VAG.
+class ModuleScanResult {
+  final VagModule module;
+  final bool responded;
+  final List<DtcCode> dtcs;
+
+  const ModuleScanResult(this.module, {required this.responded, required this.dtcs});
 }

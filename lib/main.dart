@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'models/dtc_code.dart';
 import 'package:provider/provider.dart';
 import 'screens/main_tab_screen.dart';
 import 'services/datalogger_service.dart';
@@ -6,8 +8,13 @@ import 'services/obd_service.dart';
 import 'services/pid_definitions_store.dart';
 import 'theme/app_theme.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Opisy kodów błędów (ok. 4500 kodów, język angielski)
+  try {
+    DtcCode.loadDescriptions(await rootBundle.loadString("assets/dtc/obd_descriptions_en.json"));
+  } catch (_) {}
 
   final obdService = ObdService();
   final dataloggerService = DataloggerService(obdService: obdService);

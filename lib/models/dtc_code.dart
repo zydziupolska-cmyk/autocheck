@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'extended_pid.dart';
+
 class DtcCode {
   final String code; // np. "P0087"
   final String title; // np. "Za niskie ciśnienie paliwa w układzie / na listwie wtryskowej"
@@ -372,18 +375,62 @@ class DtcCode {
     ),
   };
 
-  static DtcCode getByCode(String code) {
+  /// Opisy kodów (angielskie) z pliku danych — wczytywane przy starcie aplikacji.
+  static Map<String, String> _descriptions = {};
+
+  static int get descriptionCount => _descriptions.length;
+
+  /// Wczytuje opisy z JSON: {"codes": {"P0087": "...", ...}}.
+  static void loadDescriptions(String json) {
+    final data = jsonDecode(json) as Map<String, dynamic>;
+    final codes = (data["codes"] ?? data) as Map<String, dynamic>;
+    _descriptions = {
+      for (final e in codes.entries)
+        if (!e.key.startsWith("_")) e.key.toUpperCase(): e.value.toString(),
+    };
+  }
+
+  /// Kod zdefiniowany przez normę SAE J2012 (to samo znaczenie w każdym aucie).
+  /// Pozostałe (np. P1xxx, U1xxx) mają znaczenie zależne od producenta.
+  static bool isGenericCode(String code) {
+    if (code.length < 5) return false;
+    final letter = code[0];
+    final d1 = code[1];
+    if (letter == "P") {
+      if (d1 == "0" || d1 == "2") return true;
+      if (d1 == "3") return code.substring(2, 3) == "4"; // P34xx — wyłączanie cylindrów
+      return false;
+    }
+    return d1 == "0" || d1 == "3";
+  }
+
+  /// Opis angielski dopuszczalny dla danego auta: kody standardowe zawsze
+  /// (bez numerów części VAG w innych markach), kody producenta tylko w VAG.
+  static String? descriptionFor(String code, {VehicleProfile? profile}) {
+    final d = _descriptions[code];
+    if (d == null) return null;
+    final isVag = profile == VehicleProfile.vag;
+    if (!isGenericCode(code) && !isVag) return null;
+    if (isVag) return d;
+    // Numery części VAG (np. „(G28)”, „(N75)”) w innych markach wprowadzałyby w błąd
+    return d.replaceAll(RegExp(r'\s*\((?:[GNJVFZ]\d{1,4}[a-z]?(?:\s*/\s*[GNJVFZ]\d{1,4}[a-z]?)*)\)'), "").trim();
+  }
+
+  static DtcCode getByCode(String code, {VehicleProfile? profile}) {
     final upper = code.toUpperCase().trim();
     if (database.containsKey(upper)) {
       return database[upper]!;
     }
     final area = systemAreaFor(upper);
+    final desc = descriptionFor(upper, profile: profile);
     return DtcCode(
       code: upper,
-      title: "Kod błędu OBD-II $upper",
+      title: desc ?? "Kod błędu OBD-II $upper",
       category: area,
-      description: "Zarejestrowano kod usterki w pamięci sterownika. Obszar: $area. "
-          "Tego kodu nie ma w wbudowanej bazie — sprawdź jego dokładne znaczenie dla swojego modelu.",
+      description: desc != null
+          ? "Opis kodu (EN): $desc. Obszar: $area."
+          : "Zarejestrowano kod usterki w pamięci sterownika. Obszar: $area. "
+              "${isGenericCode(upper) ? 'Tego kodu nie ma we wbudowanej bazie' : 'To kod producenta — jego znaczenie zależy od marki'} — sprawdź jego dokładne znaczenie dla swojego modelu.",
       commonCauses: [
         "Usterka czujnika, osprzętu silnika lub instalacji elektrycznej",
         "Wartość pomiarowa poza zakresem tolerancji sterownika",

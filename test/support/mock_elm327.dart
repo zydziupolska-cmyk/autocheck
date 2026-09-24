@@ -48,6 +48,10 @@ class MockElm327 {
   /// Symuluje wyłączony zapłon: adapter odpowiada, ale żaden sterownik nie.
   bool ignitionOff = false;
 
+  /// Dodatkowe moduły VAG na CAN 11-bit: adres zapytania → (adres odpowiedzi, rekordy DTC UDS
+  /// po 4 bajty: 3 bajty kodu + status).
+  final Map<String, (String, List<List<int>>)> vagModules = {};
+
   /// Dodatkowe identyfikatory UDS (usługa 22) sterownika silnika: "1234" → bajty danych.
   final Map<String, List<int>> udsDids = {};
 
@@ -130,6 +134,13 @@ class MockElm327 {
       case MockBus.can11:
         if (_header == "7DF" || _header == "7E0") targets.add(("7E8", true));
         if (_header == "7DF" || _header == "7E1") targets.add(("7E9", false));
+        final module = vagModules[_header];
+        if (module != null) {
+          if (request.length >= 2 && request[0] == 0x19 && request[1] == 0x02) {
+            return _format(module.$1, [0x59, 0x02, 0xFF, for (final r in module.$2) ...r]).join("\r");
+          }
+          return "NO DATA";
+        }
       case MockBus.can29:
         if (_header == "DB33F1" || _header == "DA10F1") targets.add(("18DAF110", true));
         if (_header == "DB33F1" || _header == "DA18F1") targets.add(("18DAF118", false));
@@ -376,6 +387,12 @@ class MockElm327 {
         }
       case 0x03:
         return [0x43, engineDtcs.length, for (final d in engineDtcs) ...d];
+      case 0x19:
+        // UDS ReadDTCInformation (reportDTCByStatusMask): 3 bajty kodu + status 0x08 (potwierdzony)
+        if (req.length >= 2 && req[1] == 0x02) {
+          return [0x59, 0x02, 0xFF, for (final d in engineDtcs) ...[...d, 0x00, 0x08]];
+        }
+        return [0x7F, 0x19, 0x12];
       case 0x07:
         return [0x47, 0x00];
       case 0x04:
