@@ -31,18 +31,18 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: definitionsStore),
         ChangeNotifierProvider.value(value: sniffService),
       ],
-      child: const AutoCheckApp(),
+      child: const DynomicDiagApp(),
     ),
   );
 }
 
-class AutoCheckApp extends StatelessWidget {
-  const AutoCheckApp({super.key});
+class DynomicDiagApp extends StatelessWidget {
+  const DynomicDiagApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: "AutoCheck - OBD2",
+      title: "Dynomic Diag",
       debugShowCheckedModeBanner: false,
       theme: AppTheme.darkTheme,
       home: const MainTabScreen(),

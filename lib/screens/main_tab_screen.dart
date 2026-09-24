@@ -44,48 +44,26 @@ class _MainTabScreenState extends State<MainTabScreen> {
         index: _currentIndex,
         children: screens,
       ),
-      bottomNavigationBar: Container(
-        decoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: AppTheme.border, width: 1)),
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: _switchTab,
-          selectedFontSize: 10,
-          unselectedFontSize: 10,
-          items: [
-            const BottomNavigationBarItem(
-              icon: Icon(Icons.bluetooth_connected),
-              label: "Połączenie",
-            ),
-            const BottomNavigationBarItem(
-              icon: Icon(Icons.tune),
-              label: "Czujniki",
-            ),
-            const BottomNavigationBarItem(
-              icon: Icon(Icons.speed),
-              label: "Rejestrator",
-            ),
-            const BottomNavigationBarItem(
-              icon: Icon(Icons.show_chart),
-              label: "Wykres",
-            ),
-            BottomNavigationBarItem(
+      bottomNavigationBar: DecoratedBox(
+        decoration: const BoxDecoration(border: Border(top: BorderSide(color: AppTheme.border))),
+        child: NavigationBar(
+          selectedIndex: _currentIndex,
+          onDestinationSelected: _switchTab,
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+          destinations: [
+            const NavigationDestination(icon: Icon(Icons.bluetooth), label: "Połączenie"),
+            const NavigationDestination(icon: Icon(Icons.tune), label: "Parametry"),
+            const NavigationDestination(icon: Icon(Icons.speed), label: "Rejestrator"),
+            const NavigationDestination(icon: Icon(Icons.show_chart), label: "Wykres"),
+            NavigationDestination(
               icon: Badge(
                 isLabelVisible: anomalyCount > 0,
-                backgroundColor: AppTheme.red,
-                label: Text(
-                  "$anomalyCount",
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 10),
-                ),
-                child: const Icon(Icons.psychology),
+                label: Text("$anomalyCount"),
+                child: const Icon(Icons.fact_check_outlined),
               ),
-              label: "Asystent",
+              label: "Diagnoza",
             ),
-            const BottomNavigationBarItem(
-              icon: Icon(Icons.history),
-              label: "Historia",
-            ),
+            const NavigationDestination(icon: Icon(Icons.history), label: "Historia"),
           ],
         ),
       ),

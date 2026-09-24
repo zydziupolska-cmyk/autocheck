@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import '../models/trip_report.dart';
+import '../theme/app_theme.dart';
+import '../widgets/ui.dart';
+import 'diagnostic_screen.dart';
 
 class TripReportScreen extends StatelessWidget {
   final TripReport report;
@@ -9,217 +12,124 @@ class TripReportScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF1E1E1E),
-      appBar: AppBar(
-        title: const Text("Raport z Trasy"),
-        backgroundColor: const Color(0xFF2C2C2C),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildHealthHeader(),
-            const SizedBox(height: 24),
-            _buildStatsGrid(),
-            const SizedBox(height: 24),
-            _buildAnomaliesList(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildHealthHeader() {
-    Color color = Colors.green;
-    IconData icon = Icons.check_circle_outline;
-    String status = "Silnik w świetnej kondycji!";
-    String subtitle = "Nie wykryto żadnych przewlekłych usterek w trakcie jazdy.";
-
-    if (report.criticalCondition) {
-      color = Colors.redAccent;
-      icon = Icons.warning_amber_rounded;
-      status = "Wykryto Poważne Usterki!";
-      subtitle = "Twoje auto wymaga natychmiastowej wizyty w warsztacie.";
-    } else if (report.needsAttention) {
-      color = Colors.orangeAccent;
-      icon = Icons.handyman_outlined;
-      status = "Wymaga Uwagi";
-      subtitle = "Odnaleziono problemy, które mogą wpłynąć na spalanie lub moc.";
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: const Color(0xFF2C2C2C),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withOpacity(0.5), width: 2),
-      ),
-      child: Column(
+      appBar: AppBar(title: const Text("Raport z trasy")),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
         children: [
-          Icon(icon, size: 64, color: color),
+          _header(),
           const SizedBox(height: 16),
-          Text(
-            status,
-            style: TextStyle(color: color, fontSize: 22, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            subtitle,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white70, fontSize: 14),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            "Wynik Zdrowia: ${report.healthScore}%",
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-          ),
+          _stats(),
+          if (report.aggregatedAnomalies.isNotEmpty) ...[
+            const SizedBox(height: 20),
+            const SectionLabel("Wykryte problemy"),
+            for (final agg in report.aggregatedAnomalies) _anomalyCard(agg),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildStatsGrid() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          "Ciekawostki Telemetryczne",
-          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 12),
-        GridView.count(
-          crossAxisCount: 2,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          mainAxisSpacing: 12,
-          crossAxisSpacing: 12,
-          childAspectRatio: 2.5,
-          children: [
-            _statCard(Icons.timer, "Czas Trwania", "${report.duration.inMinutes} min"),
-            _statCard(Icons.route, "Dystans (est.)", "${report.distanceKm.toStringAsFixed(1)} km"),
-            _statCard(Icons.speed, "Max RPM", report.maxRpm.toStringAsFixed(0)),
-            _statCard(Icons.air, "Max Boost", "${report.maxBoostBar.toStringAsFixed(2)} bar"),
-            _statCard(Icons.thermostat, "Max Temp Płynu", "${report.maxEctC.toStringAsFixed(0)} °C"),
-            _statCard(Icons.water_drop, "Śr. LTFT", "${report.avgLtft.toStringAsFixed(1)} %"),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _statCard(IconData icon, String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: const Color(0xFF2C2C2C),
-        borderRadius: BorderRadius.circular(12),
-      ),
+  Widget _header() {
+    final Color tone;
+    final String status;
+    final String subtitle;
+    if (report.criticalCondition) {
+      tone = AppTheme.fault;
+      status = "Wykryto poważne usterki";
+      subtitle = "Auto wymaga wizyty w warsztacie.";
+    } else if (report.needsAttention) {
+      tone = AppTheme.warn;
+      status = "Wymaga uwagi";
+      subtitle = "Problemy, które mogą wpływać na spalanie lub moc.";
+    } else {
+      tone = AppTheme.ok;
+      status = "Bez usterek";
+      subtitle = "W trakcie jazdy nie wykryto przewlekłych usterek.";
+    }
+    return Panel(
+      stripe: tone,
       child: Row(
         children: [
-          Icon(icon, color: Colors.blueAccent, size: 24),
-          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                Text(value, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                Text(status, style: AppTheme.sectionTitle.copyWith(fontSize: 17)),
+                const SizedBox(height: 4),
+                Text(subtitle, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
               ],
             ),
           ),
+          const SizedBox(width: 12),
+          Readout(label: "Ocena", value: "${report.healthScore}", unit: "/100", size: 26),
         ],
       ),
     );
   }
 
-  Widget _buildAnomaliesList() {
-    if (report.aggregatedAnomalies.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          "Odnalezione Czerwone Flagi",
-          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+  Widget _stats() {
+    final items = [
+      ("Czas", "${report.duration.inMinutes}", "min"),
+      ("Dystans (szac.)", report.distanceKm.toStringAsFixed(1), "km"),
+      ("Maks. obroty", report.maxRpm.toStringAsFixed(0), "obr/min"),
+      ("Maks. doładowanie", report.maxBoostBar.toStringAsFixed(2), "bar"),
+      ("Maks. temp. płynu", report.maxEctC.toStringAsFixed(0), "°C"),
+      ("Śr. korekta LTFT", report.avgLtft.toStringAsFixed(1), "%"),
+    ];
+    final rows = <Widget>[];
+    for (int i = 0; i < items.length; i += 2) {
+      if (i > 0) rows.add(const Divider());
+      rows.add(IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final (j, it) in items.sublist(i, i + 2).indexed) ...[
+              if (j > 0) const VerticalDivider(width: 1),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Readout(label: it.$1, value: it.$2, unit: it.$3, size: 18),
+                ),
+              ),
+            ],
+          ],
         ),
-        const SizedBox(height: 12),
-        ...report.aggregatedAnomalies.map((agg) => _buildAnomalyCard(agg)),
-      ],
-    );
+      ));
+    }
+    return Panel(padding: EdgeInsets.zero, child: Column(children: rows));
   }
 
-  Widget _buildAnomalyCard(AggregatedAnomaly agg) {
-    final anomaly = agg.sample;
-    final color = Color(anomaly.severityColorHex);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF2C2C2C),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
+  Widget _anomalyCard(AggregatedAnomaly agg) {
+    final a = agg.sample;
+    final tone = DiagnosticScreen.toneOf(a.severity);
+    return Panel(
+      margin: const EdgeInsets.only(bottom: 10),
+      stripe: tone,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  anomaly.severityLabel,
-                  style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.bold),
-                ),
-              ),
-              const SizedBox(width: 8),
+              Text(DiagnosticScreen.severityLabel(a.severity),
+                  style: TextStyle(color: tone, fontSize: 11.5, fontWeight: FontWeight.w600)),
               if (agg.occurrenceCount > 1)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[800],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    "${agg.occurrenceCount}x Wystąpień",
-                    style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
-                  ),
-                ),
+                Text("  •  ${agg.occurrenceCount}× w trakcie jazdy",
+                    style: const TextStyle(color: AppTheme.textMuted, fontSize: 11.5)),
             ],
           ),
-          const SizedBox(height: 12),
-          Text(
-            anomaly.title,
-            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            anomaly.description,
-            style: const TextStyle(color: Colors.white70, fontSize: 14),
-          ),
-          if (anomaly.recommendations.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            const Text(
-              "Co zrobić?",
-              style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 4),
-            ...anomaly.recommendations.map((r) => Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text("• ", style: TextStyle(color: Colors.blueAccent, fontSize: 14, fontWeight: FontWeight.bold)),
-                Expanded(child: Text(r, style: const TextStyle(color: Colors.white70, fontSize: 14))),
-              ],
-            )),
-          ]
+          const SizedBox(height: 4),
+          Text(a.title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          Text(a.plainSummary ?? a.description, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+          if (a.recommendations.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            const SectionLabel("Co sprawdzić"),
+            for (final (i, r) in a.recommendations.indexed)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text("${i + 1}. $r", style: const TextStyle(fontSize: 13)),
+              ),
+          ],
         ],
       ),
     );

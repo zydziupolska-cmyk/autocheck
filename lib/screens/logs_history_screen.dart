@@ -3,6 +3,8 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../services/datalogger_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/ui.dart';
+import '../models/log_point.dart';
 
 class LogsHistoryScreen extends StatelessWidget {
   final void Function(int tabIndex)? onNavigateToTab;
@@ -15,239 +17,142 @@ class LogsHistoryScreen extends StatelessWidget {
     final history = logger.sessionsHistory;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Row(
-          children: [
-            Icon(Icons.history, color: AppTheme.cyan),
-            SizedBox(width: 8),
-            Text("Zapisane Logi & Eksport CSV"),
-          ],
-        ),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Karta szybkiego eksportu aktywnego logu
-            _buildExportCard(context, logger),
-
-            const SizedBox(height: 20),
-
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  "HISTORIA SESJI POMIAROWYCH",
-                  style: TextStyle(
-                    color: AppTheme.textSecondary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.0,
-                  ),
-                ),
-                Text(
-                  "${history.length} zapisanych",
-                  style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
-                ),
-              ],
+      appBar: AppBar(title: const Text("Historia")),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        children: [
+          _buildExportCard(context, logger),
+          const SizedBox(height: 20),
+          SectionLabel("Zapisane logi (${history.length})"),
+          if (history.isEmpty)
+            const Notice("Brak zapisanych logów. Każdy pomiar z Rejestratora zapisuje się tu automatycznie.")
+          else
+            Panel(
+              padding: EdgeInsets.zero,
+              child: Column(
+                children: [
+                  for (int i = 0; i < history.length; i++) ...[
+                    if (i > 0) const Divider(),
+                    _sessionRow(context, logger, history[i]),
+                  ],
+                ],
+              ),
             ),
-            const SizedBox(height: 10),
+        ],
+      ),
+    );
+  }
 
-            if (history.isEmpty)
-              _buildEmptyHistory()
-            else
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: history.length,
-                itemBuilder: (context, index) {
-                  final session = history[index];
-                  final isSelected = logger.activeSession?.id == session.id;
-
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    decoration: BoxDecoration(
-                      color: isSelected ? AppTheme.surfaceLight : AppTheme.surface,
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(
-                        color: isSelected ? AppTheme.cyan : AppTheme.border,
-                        width: isSelected ? 1.5 : 1,
-                      ),
+  Widget _sessionRow(BuildContext context, DataloggerService logger, LogSession session) {
+    final isSelected = logger.activeSession?.id == session.id;
+    return Material(
+      color: isSelected ? AppTheme.surfaceLight : Colors.transparent,
+      child: InkWell(
+        // Dotknięcie wybiera log (eksport, Diagnoza) bez przechodzenia na wykres
+        onTap: logger.isRecording ? null : () => logger.selectSession(session),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 4, 10),
+          child: Row(
+            children: [
+              Container(width: 3, height: 40, color: isSelected ? AppTheme.accent : Colors.transparent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(session.title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 2),
+                    Text(
+                      [
+                        DateFormat("dd.MM.yyyy HH:mm").format(session.createdAt),
+                        "${session.durationSec.toStringAsFixed(1)} s",
+                        "maks. ${session.peakRpm.toInt()} obr/min",
+                        "${session.peakBoost.toStringAsFixed(2)} bar",
+                      ].join(" • "),
+                      style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontFeatures: AppTheme.tabular),
                     ),
-                    child: ListTile(
-                      // Dotknięcie wybiera log (eksport, Asystent) bez przechodzenia na wykres
-                      onTap: logger.isRecording ? null : () => logger.selectSession(session),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      leading: CircleAvatar(
-                        backgroundColor: AppTheme.blue.withAlpha(30),
-                        child: const Icon(Icons.analytics, color: AppTheme.cyan),
+                    if (session.vehicleLabel != null)
+                      Text(
+                        "${session.vehicleLabel}${session.isDiesel ? ' • diesel' : ''}",
+                        style: const TextStyle(color: AppTheme.textMuted, fontSize: 11.5),
                       ),
-                      title: Text(
-                        session.title,
-                        style: const TextStyle(
-                          color: AppTheme.textPrimary,
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const SizedBox(height: 2),
-                          Text(
-                            DateFormat("dd.MM.yyyy HH:mm:ss").format(session.createdAt),
-                            style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            "Czas: ${session.durationSec.toStringAsFixed(1)}s | Max Boost: ${session.peakBoost.toStringAsFixed(2)} bar | Max RPM: ${session.peakRpm.toInt()}",
-                            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
-                          ),
-                          if (session.vehicleLabel != null) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              "${session.vehicleLabel}${session.isDiesel ? ' • Diesel' : ''}",
-                              style: const TextStyle(color: AppTheme.textMuted, fontSize: 10),
-                            ),
-                          ],
-                        ],
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.show_chart, color: AppTheme.cyan),
-                            tooltip: "Wczytaj na wykres",
-                            onPressed: () {
-                              logger.selectSession(session);
-                              onNavigateToTab?.call(3); // Idź do wykresu
-                            },
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.share, color: AppTheme.textSecondary),
-                            tooltip: "Eksportuj ten log (CSV)",
-                            onPressed: () => logger.exportAndShareCsv(session: session),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.delete_outline, color: AppTheme.textMuted),
-                            tooltip: "Usuń log",
-                            onPressed: () async {
-                              final ok = await showDialog<bool>(
-                                context: context,
-                                builder: (ctx) => AlertDialog(
-                                  backgroundColor: AppTheme.surface,
-                                  title: const Text("Usunąć log?", style: TextStyle(color: AppTheme.textPrimary)),
-                                  content: Text(session.title, style: const TextStyle(color: AppTheme.textSecondary)),
-                                  actions: [
-                                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Anuluj")),
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(ctx, true),
-                                      child: const Text("Usuń", style: TextStyle(color: AppTheme.red)),
-                                    ),
-                                  ],
-                                ),
-                              );
-                              if (ok == true) await logger.deleteSession(session);
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.show_chart, size: 20),
+                tooltip: "Pokaż na wykresie",
+                onPressed: () {
+                  logger.selectSession(session);
+                  onNavigateToTab?.call(3);
                 },
               ),
-          ],
+              IconButton(
+                icon: const Icon(Icons.ios_share, size: 20),
+                tooltip: "Eksportuj ten log (CSV)",
+                onPressed: () => logger.exportAndShareCsv(session: session),
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline, size: 20),
+                tooltip: "Usuń log",
+                onPressed: () async {
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text("Usunąć log?"),
+                      content: Text(session.title, style: const TextStyle(color: AppTheme.textSecondary)),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Anuluj")),
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text("Usuń", style: TextStyle(color: AppTheme.fault)),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (ok == true) await logger.deleteSession(session);
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   Widget _buildExportCard(BuildContext context, DataloggerService logger) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.cyan.withAlpha(80)),
-      ),
+    final hasLog = logger.currentPoints.isNotEmpty;
+    return Panel(
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Row(
-            children: [
-              Icon(Icons.file_upload, color: AppTheme.cyan, size: 20),
-              SizedBox(width: 8),
-              Text(
-                "Eksportuj do Tunera / PC (Format CSV)",
-                style: TextStyle(
-                  color: AppTheme.textPrimary,
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
+          const Text("Eksport CSV", style: AppTheme.sectionTitle),
+          const SizedBox(height: 4),
           const Text(
-            "Pliki CSV są w pełni zgodne z programami MegaLogViewer, Virtual Dyno, Excel oraz aplikacjami do chiptuningu.",
-            style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+            "Zgodny z MegaLogViewer, Virtual Dyno i Excelem.",
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 12.5),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           Text(
-            logger.currentPoints.isEmpty
-                ? "Brak wybranego logu — dotknij log na liście poniżej albo użyj ikony udostępniania przy nim."
-                : "Eksportowany: ${logger.isRecording ? 'bieżące nagranie' : logger.activeSession?.title ?? 'bieżące nagranie'}",
-            style: const TextStyle(color: AppTheme.cyan, fontSize: 12, fontWeight: FontWeight.bold),
+            hasLog
+                ? "Wybrany: ${logger.isRecording ? 'bieżące nagranie' : logger.activeSession?.title ?? 'bieżące nagranie'}"
+                : "Nie wybrano logu. Dotknij log na liście poniżej.",
+            style: TextStyle(color: hasLog ? AppTheme.textPrimary : AppTheme.textMuted, fontSize: 13),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           ElevatedButton.icon(
-            onPressed: logger.currentPoints.isEmpty
+            onPressed: !hasLog
                 ? null
                 : () async {
                     final path = await logger.exportAndShareCsv();
                     if (path != null && context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text("Wygenerowano plik CSV: $path"),
-                          backgroundColor: AppTheme.green,
-                        ),
-                      );
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Zapisano plik: $path")));
                     }
                   },
-            icon: const Icon(Icons.share),
-            label: const Text("Udostępnij wybrany log (WhatsApp / E-mail / Dysk)"),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.cyan,
-              foregroundColor: Colors.black,
-              minimumSize: const Size.fromHeight(44),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
+            icon: const Icon(Icons.ios_share, size: 18),
+            label: const Text("Udostępnij wybrany log"),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildEmptyHistory() {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: const Center(
-        child: Column(
-          children: [
-            Icon(Icons.history_toggle_off, color: AppTheme.textMuted, size: 40),
-            SizedBox(height: 8),
-            Text(
-              "Brak zapisanych logów",
-              style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-            ),
-          ],
-        ),
       ),
     );
   }

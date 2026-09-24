@@ -1034,7 +1034,7 @@ class DriveAnalyzer {
             : "Ten log nie zawiera danych potrzebnych do oceny kodu",
         plainSummary: hasData
             ? "Sterownik zapisał kod $code, ale w tym logu objawu nie było widać. Usterka może pojawiać się tylko w określonych warunkach — nagraj $whatToLog, najlepiej wtedy, gdy problem występuje."
-            : "Sterownik zapisał kod $code. Żeby Asystent mógł wskazać przyczynę, nagraj $whatToLog.",
+            : "Sterownik zapisał kod $code. Żeby Diagnoza mogła wskazać przyczynę, nagraj $whatToLog.",
         description: info.description,
         hypotheses: info.commonCauses,
         recommendations: ["Nagraj: $whatToLog.", ...info.diagnosticsSteps],

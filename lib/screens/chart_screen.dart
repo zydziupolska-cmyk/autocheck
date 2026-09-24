@@ -6,6 +6,8 @@ import '../models/anomaly.dart';
 import '../models/log_point.dart';
 import '../services/datalogger_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/ui.dart';
+import 'diagnostic_screen.dart';
 
 class ChartScreen extends StatefulWidget {
   final void Function(int tabIndex)? onNavigateToTab;
@@ -34,38 +36,26 @@ class _ChartScreenState extends State<ChartScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Row(
-          children: [
-            Icon(Icons.show_chart, color: AppTheme.cyan),
-            SizedBox(width: 8),
-            Text("Wykres Telemetrii & Anomalii"),
-          ],
-        ),
+        title: const Text("Wykres"),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.share, color: AppTheme.cyan),
-            tooltip: "Udostępnij log CSV",
-            onPressed: () => logger.exportAndShareCsv(),
-          ),
+          if (points.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.ios_share),
+              tooltip: "Eksportuj log (CSV)",
+              onPressed: () => logger.exportAndShareCsv(),
+            ),
         ],
       ),
       body: points.isEmpty
           ? _buildEmptyState(context, logger)
           : Column(
               children: [
-                // Pasek przełączników kanałów
                 _buildChannelToggles(points),
-
-                // Pływający pasek HUD z wartościami w miejscu dotknięcia
                 _buildTelemetryHud(points),
-
-                // Pasek wykrytych anomalii (znaczniki do szybkiego skoku)
                 if (anomalies.isNotEmpty) _buildAnomaliesQuickBar(anomalies, points),
-
-                // Główny interaktywny wykres
                 Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 8, 16, 16),
+                    padding: const EdgeInsets.fromLTRB(8, 8, 16, 12),
                     child: _buildInteractiveChart(points, anomalies),
                   ),
                 ),
@@ -75,21 +65,18 @@ class _ChartScreenState extends State<ChartScreen> {
   }
 
   Widget _buildEmptyState(BuildContext context, DataloggerService logger) {
-    return Center(
+    return const Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: EdgeInsets.all(32),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.analytics_outlined, size: 70, color: AppTheme.textMuted),
-            const SizedBox(height: 16),
-            const Text(
-              "Brak danych pomiarowych",
-              style: TextStyle(color: AppTheme.textPrimary, fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              "Nagraj jazdę w zakładce „Rejestrator” albo wybierz zapisany log w „Historii”.",
+            Icon(Icons.show_chart, size: 40, color: AppTheme.textMuted),
+            SizedBox(height: 12),
+            Text("Brak danych", style: AppTheme.sectionTitle),
+            SizedBox(height: 6),
+            Text(
+              "Nagraj pomiar w zakładce Rejestrator albo wybierz zapisany log w Historii.",
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
             ),
@@ -101,34 +88,48 @@ class _ChartScreenState extends State<ChartScreen> {
 
   /// Kanały wykresu: klucz, etykieta, kolor, zakres do normalizacji (0-100%),
   /// jednostka i liczba miejsc po przecinku w HUD.
+  // Barwy serii: para zadane/rzeczywiste ma jedną barwę (zadane linią przerywaną)
+  static const _cRpm = Color(0xFFB9BEC5);
+  static const _cBoost = AppTheme.accent;
+  static const _cPedal = Color(0xFF9B8AFB);
+  static const _cMaf = AppTheme.info;
+  static const _cRail = Color(0xFFD9A63E);
+  static const _cVgt = Color(0xFF3FB6A8);
+  static const _cEgr = Color(0xFFB08968);
+  static const _cDpf = Color(0xFFC06CD8);
+  static const _cLambda = Color(0xFF57B8FF);
+  static const _cTorque = Color(0xFF7BC67E);
+  static const _cTemp = Color(0xFFE08A5E);
+  static const _cMisc = Color(0xFF8A9099);
+
   static final List<_Channel> _channels = [
-    _Channel("RPM", "RPM", AppTheme.blue, 0, 7500, "", 0),
-    _Channel("BOOST", "Doładowanie", AppTheme.cyan, -1.0, 2.5, "b", 2),
-    _Channel("TARGET_BOOST", "Doład. zadane", const Color(0xFF80FFDB), -1.0, 2.5, "b", 2),
-    _Channel("PEDAL", "Pedał", const Color(0xFFB5179E), 0, 100, "%", 0),
-    _Channel("TPS", "Przepustn.", const Color(0xFF7000FF), 0, 100, "%", 0),
-    _Channel("LOAD", "Obciąż.", const Color(0xFF06D6A0), 0, 100, "%", 0),
-    _Channel("MAF", "MAF", AppTheme.green, 0, 250, "g", 0),
-    _Channel("F_RAIL", "Szyna", const Color(0xFFFF0055), 0, 200, "b", 0),
-    _Channel("RAIL_TGT", "Szyna zadana", const Color(0xFFFFB3C1), 0, 200, "b", 0),
-    _Channel("VGT_CMD", "VGT zadane", const Color(0xFFF72585), 0, 100, "%", 0),
-    _Channel("VGT_ACT", "VGT", const Color(0xFFB5179E), 0, 100, "%", 0),
-    _Channel("EGR_CMD", "EGR zadane", const Color(0xFF9C27B0), 0, 100, "%", 0),
-    _Channel("EGR_ACT", "EGR", const Color(0xFFCE93D8), 0, 100, "%", 0),
-    _Channel("DPF_DP", "DPF ΔP", const Color(0xFFD00000), 0, 60, "kPa", 1),
-    _Channel("EXH_P", "Ciśn. spalin", const Color(0xFFFF6D00), 90, 350, "kPa", 0),
-    _Channel("EGT", "EGT", const Color(0xFFFF5400), 100, 900, "°C", 0),
-    _Channel("IGN", "Zapłon", AppTheme.orange, -10, 35, "°", 1),
-    _Channel("AFR", "AFR", AppTheme.purple, 9, 18, "", 1),
-    _Channel("LAMBDA", "Lambda", const Color(0xFFFF4D6D), 0.7, 3.0, "", 2),
-    _Channel("LAMBDA_CMD", "Lambda zad.", const Color(0xFFFFB3C6), 0.7, 3.0, "", 2),
-    _Channel("STFT", "STFT", AppTheme.yellow, -25, 25, "%", 1),
-    _Channel("LTFT", "LTFT", const Color(0xFFFB5607), -25, 25, "%", 1),
-    _Channel("TQ_DEMAND", "Moment żąd.", const Color(0xFFFFD166), 0, 100, "%", 0),
-    _Channel("TQ_ACT", "Moment", const Color(0xFFEF476F), 0, 100, "%", 0),
-    _Channel("SPEED", "Prędkość", const Color(0xFF9D4EDD), 0, 200, "km/h", 0),
-    _Channel("IAT", "IAT", const Color(0xFF4CC9F0), -10, 80, "°C", 0),
-    _Channel("ECT", "ECT", const Color(0xFF4361EE), 0, 120, "°C", 0),
+    _Channel("RPM", "Obroty", _cRpm, 0, 7500, "", 0),
+    _Channel("BOOST", "Doładowanie", _cBoost, -1.0, 2.5, " bar", 2),
+    _Channel("TARGET_BOOST", "Doład. zadane", _cBoost, -1.0, 2.5, " bar", 2),
+    _Channel("PEDAL", "Pedał", _cPedal, 0, 100, "%", 0),
+    _Channel("TPS", "Przepustnica", _cPedal, 0, 100, "%", 0),
+    _Channel("LOAD", "Obciążenie", _cMisc, 0, 100, "%", 0),
+    _Channel("MAF", "MAF", _cMaf, 0, 250, " g/s", 0),
+    _Channel("F_RAIL", "Szyna", _cRail, 0, 200, " bar", 0),
+    _Channel("RAIL_TGT", "Szyna zadana", _cRail, 0, 200, " bar", 0),
+    _Channel("VGT_CMD", "VGT zadane", _cVgt, 0, 100, "%", 0),
+    _Channel("VGT_ACT", "VGT", _cVgt, 0, 100, "%", 0),
+    _Channel("EGR_CMD", "EGR zadane", _cEgr, 0, 100, "%", 0),
+    _Channel("EGR_ACT", "EGR", _cEgr, 0, 100, "%", 0),
+    _Channel("DPF_DP", "DPF ΔP", _cDpf, 0, 60, " kPa", 1),
+    _Channel("EXH_P", "Ciśn. spalin", _cDpf, 90, 350, " kPa", 0),
+    _Channel("EGT", "EGT", _cTemp, 100, 900, "°C", 0),
+    _Channel("IGN", "Zapłon", _cTemp, -10, 35, "°", 1),
+    _Channel("AFR", "AFR", _cLambda, 9, 18, "", 1),
+    _Channel("LAMBDA", "Lambda", _cLambda, 0.7, 3.0, "", 2),
+    _Channel("LAMBDA_CMD", "Lambda zadana", _cLambda, 0.7, 3.0, "", 2),
+    _Channel("STFT", "STFT", _cRail, -25, 25, "%", 1),
+    _Channel("LTFT", "LTFT", _cVgt, -25, 25, "%", 1),
+    _Channel("TQ_DEMAND", "Moment żądany", _cTorque, 0, 100, "%", 0),
+    _Channel("TQ_ACT", "Moment", _cTorque, 0, 100, "%", 0),
+    _Channel("SPEED", "Prędkość", _cMisc, 0, 200, " km/h", 0),
+    _Channel("IAT", "IAT", _cTemp, -10, 80, "°C", 0),
+    _Channel("ECT", "ECT", _cTemp, 0, 120, "°C", 0),
   ];
 
   /// Kanał „zadany” (rysowany linią przerywaną na skali swojego rzeczywistego odpowiednika).
@@ -162,7 +163,7 @@ class _ChartScreenState extends State<ChartScreen> {
     final knownKeys = _channels.map((c) => c.key).toSet();
     for (final k in keys.where((k) => !knownKeys.contains(k))) {
       final pid = ObdPid.getByShortName(k);
-      known.add(_Channel(k, k, pid != null ? Color(pid.colorValue) : AppTheme.textSecondary,
+      known.add(_Channel(k, pid?.name ?? k, _cMisc,
           pid?.minExpected ?? 0, pid?.maxExpected ?? 100, pid?.unit ?? "", 1));
     }
     return known;
@@ -170,77 +171,89 @@ class _ChartScreenState extends State<ChartScreen> {
 
   Widget _buildChannelToggles(List<LogPoint> points) {
     final channels = _availableChannels(points);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      color: AppTheme.surface,
-      child: SingleChildScrollView(
+    return SizedBox(
+      height: 40,
+      child: ListView(
         scrollDirection: Axis.horizontal,
-        child: Row(
-          children: channels.map((ch) {
-            final key = ch.key;
-            final isVisible = _visibleChannels.contains(key);
-            final color = ch.color;
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: [
+          for (final ch in channels)
+            Padding(
+              padding: const EdgeInsets.only(right: 6, top: 4, bottom: 4),
+              child: _toggle(ch, _visibleChannels.contains(ch.key)),
+            ),
+        ],
+      ),
+    );
+  }
 
-            return Padding(
-              padding: const EdgeInsets.only(right: 6),
-              child: FilterChip(
-                label: Text(ch.label),
-                selected: isVisible,
-                selectedColor: color.withAlpha(50),
-                backgroundColor: AppTheme.surfaceLight,
-                labelStyle: TextStyle(
-                  color: isVisible ? color : AppTheme.textMuted,
-                  fontWeight: isVisible ? FontWeight.bold : FontWeight.normal,
-                  fontSize: 12,
-                ),
-                side: BorderSide(color: isVisible ? color : AppTheme.border),
-                onSelected: (val) {
-                  setState(() {
-                    if (val) {
-                      _visibleChannels.add(key);
-                    } else if (_visibleChannels.length > 1) {
-                      _visibleChannels.remove(key);
-                    }
-                  });
-                },
-              ),
-            );
-          }).toList(),
+  Widget _toggle(_Channel ch, bool on) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
+      onTap: () => setState(() {
+        if (!on) {
+          _visibleChannels.add(ch.key);
+        } else if (_visibleChannels.length > 1) {
+          _visibleChannels.remove(ch.key);
+        }
+      }),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: on ? AppTheme.surfaceLight : Colors.transparent,
+          border: Border.all(color: on ? AppTheme.textMuted : AppTheme.border),
+          borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _swatch(ch, on),
+            const SizedBox(width: 6),
+            Text(ch.label, style: TextStyle(color: on ? AppTheme.textPrimary : AppTheme.textMuted, fontSize: 12)),
+          ],
         ),
       ),
     );
   }
 
+  /// Próbka linii: ciągła dla rzeczywistych, przerywana dla zadanych.
+  Widget _swatch(_Channel ch, bool on) {
+    final c = on ? ch.color : AppTheme.textMuted;
+    if (!_isTarget(ch.key)) return Container(width: 12, height: 2.5, color: c);
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Container(width: 4, height: 2, color: c),
+      const SizedBox(width: 2),
+      Container(width: 4, height: 2, color: c),
+    ]);
+  }
+
   Widget _buildTelemetryHud(List<LogPoint> points) {
     final p = _hoveredPoint ?? points.last;
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    final visible = _availableChannels(points).where((c) => _visibleChannels.contains(c.key)).toList();
+    Widget cell(String label, String value, Widget? swatch) => Padding(
+          padding: const EdgeInsets.only(right: 18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                if (swatch != null) ...[swatch, const SizedBox(width: 5)],
+                Text(label, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+              ]),
+              Text(value, style: AppTheme.readout.copyWith(fontSize: 15)),
+            ],
+          ),
+        );
+    return Panel(
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 0),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppTheme.surfaceLight,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppTheme.border),
-      ),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            Text(
-              "T: ${p.timeSec.toStringAsFixed(2)}s",
-              style: const TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.bold, fontSize: 13),
-            ),
-            const SizedBox(width: 10),
-            for (final ch in _availableChannels(points))
-              if (_visibleChannels.contains(ch.key))
-                Padding(
-                  padding: const EdgeInsets.only(right: 10),
-                  child: Text(
-                    "${ch.label}: ${p.values[ch.key]?.toStringAsFixed(ch.decimals) ?? '—'}${ch.unit}",
-                    style: TextStyle(color: ch.color, fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                ),
+            cell("Czas", "${p.timeSec.toStringAsFixed(1)} s", null),
+            for (final ch in visible)
+              cell(ch.label, "${p.values[ch.key]?.toStringAsFixed(ch.decimals) ?? '—'}${ch.unit}", _swatch(ch, true)),
           ],
         ),
       ),
@@ -248,53 +261,47 @@ class _ChartScreenState extends State<ChartScreen> {
   }
 
   Widget _buildAnomaliesQuickBar(List<Anomaly> anomalies, List<LogPoint> points) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: SingleChildScrollView(
+    return SizedBox(
+      height: 44,
+      child: ListView(
         scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            const Icon(Icons.warning_amber_rounded, color: AppTheme.red, size: 16),
-            const SizedBox(width: 6),
-            const Text(
-              "Wykryte strefy:",
-              style: TextStyle(color: AppTheme.red, fontSize: 11, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(width: 8),
-            ...anomalies.map((anom) {
-              final isSel = _selectedAnomaly == anom;
-              return Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: ActionChip(
-                  avatar: CircleAvatar(
-                    backgroundColor: Color(anom.severityColorHex),
-                    radius: 4,
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        children: [
+          for (final anom in anomalies)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
+                onTap: () {
+                  setState(() {
+                    _selectedAnomaly = anom;
+                    final midTime = (anom.startMs + anom.endMs) / 2.0;
+                    _hoveredPoint = points.reduce((a, b) => (a.timeMs - midTime).abs() < (b.timeMs - midTime).abs() ? a : b);
+                  });
+                  _showAnomalyModal(context, anom);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: _selectedAnomaly == anom ? AppTheme.surfaceLight : AppTheme.surface,
+                    border: Border.all(color: AppTheme.border),
+                    borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
                   ),
-                  backgroundColor: isSel ? Color(anom.severityColorHex).withAlpha(50) : AppTheme.surface,
-                  side: BorderSide(color: Color(anom.severityColorHex)),
-                  label: Text(
-                    "${anom.title.split('(').first.trim()} (${anom.startSec.toStringAsFixed(1)}s)",
-                    style: TextStyle(
-                      color: Color(anom.severityColorHex),
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      StatusDot(DiagnosticScreen.toneOf(anom.severity), size: 7),
+                      const SizedBox(width: 6),
+                      Text(
+                        "${anom.title.split('(').first.split('—').first.trim()} • ${anom.startSec.toStringAsFixed(1)} s",
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ],
                   ),
-                  onPressed: () {
-                    setState(() {
-                      _selectedAnomaly = anom;
-                      // Ustaw wskaźnik na środek anomalii
-                      final midTime = (anom.startMs + anom.endMs) / 2.0;
-                      _hoveredPoint = points.reduce((a, b) =>
-                          (a.timeMs - midTime).abs() < (b.timeMs - midTime).abs() ? a : b);
-                    });
-                    _showAnomalyModal(context, anom);
-                  },
                 ),
-              );
-            }),
-          ],
-        ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -325,8 +332,8 @@ class _ChartScreenState extends State<ChartScreen> {
         spots: spots,
         isCurved: false,
         color: ch.color,
-        barWidth: target ? 1.8 : (ch.key == "BOOST" ? 3.0 : 2.2),
-        dashArray: target ? [6, 4] : null,
+        barWidth: target ? 1.6 : (ch.key == "BOOST" ? 2.4 : 1.8),
+        dashArray: target ? [5, 4] : null,
         dotData: const FlDotData(show: false),
       ));
     }
@@ -336,7 +343,8 @@ class _ChartScreenState extends State<ChartScreen> {
       return VerticalRangeAnnotation(
         x1: anom.startSec,
         x2: anom.endSec,
-        color: Color(anom.severityColorHex).withAlpha(45),
+        // Neutralne pasmo — kolor zostaje dla linii danych
+        color: AppTheme.textPrimary.withAlpha(anom == _selectedAnomaly ? 26 : 12),
       );
     }).toList();
 
@@ -350,8 +358,9 @@ class _ChartScreenState extends State<ChartScreen> {
         gridData: FlGridData(
           show: true,
           drawVerticalLine: true,
-          getDrawingHorizontalLine: (val) => const FlLine(color: AppTheme.border, strokeWidth: 0.5),
-          getDrawingVerticalLine: (val) => const FlLine(color: AppTheme.border, strokeWidth: 0.5),
+          horizontalInterval: 25,
+          getDrawingHorizontalLine: (val) => const FlLine(color: AppTheme.border, strokeWidth: 0.6),
+          getDrawingVerticalLine: (val) => const FlLine(color: AppTheme.border, strokeWidth: 0.6),
         ),
         titlesData: FlTitlesData(
           topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
@@ -360,9 +369,10 @@ class _ChartScreenState extends State<ChartScreen> {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 28,
+              interval: 25,
               getTitlesWidget: (val, meta) => Text(
                 "${val.toInt()}%",
-                style: const TextStyle(color: AppTheme.textMuted, fontSize: 9),
+                style: const TextStyle(color: AppTheme.textMuted, fontSize: 9.5, fontFeatures: AppTheme.tabular),
               ),
             ),
           ),
@@ -371,16 +381,13 @@ class _ChartScreenState extends State<ChartScreen> {
               showTitles: true,
               reservedSize: 22,
               getTitlesWidget: (val, meta) => Text(
-                "${val.toStringAsFixed(1)}s",
-                style: const TextStyle(color: AppTheme.textMuted, fontSize: 10),
+                "${val.toStringAsFixed(0)} s",
+                style: const TextStyle(color: AppTheme.textMuted, fontSize: 10, fontFeatures: AppTheme.tabular),
               ),
             ),
           ),
         ),
-        borderData: FlBorderData(
-          show: true,
-          border: Border.all(color: AppTheme.border),
-        ),
+        borderData: FlBorderData(show: false),
         lineTouchData: LineTouchData(
           enabled: true,
           touchTooltipData: LineTouchTooltipData(
@@ -398,6 +405,10 @@ class _ChartScreenState extends State<ChartScreen> {
             }
           },
         ),
+        extraLinesData: ExtraLinesData(verticalLines: [
+          if (_hoveredPoint != null)
+            VerticalLine(x: _hoveredPoint!.timeSec, color: AppTheme.textSecondary, strokeWidth: 1),
+        ]),
         lineBarsData: lineBars,
       ),
     );
@@ -406,212 +417,18 @@ class _ChartScreenState extends State<ChartScreen> {
   void _showAnomalyModal(BuildContext context, Anomaly anom) {
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppTheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        maxChildSize: 0.92,
+        builder: (ctx, scroll) => ListView(
+          controller: scroll,
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          children: [AnomalyCard(anomaly: anom)],
+        ),
       ),
-      builder: (ctx) {
-        return Padding(
-          padding: const EdgeInsets.all(20),
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Color(anom.severityColorHex).withAlpha(40),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        anom.severityLabel,
-                        style: TextStyle(
-                          color: Color(anom.severityColorHex),
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                    Text(
-                      "${anom.startSec.toStringAsFixed(1)}s - ${anom.endSec.toStringAsFixed(1)}s (${anom.startRpm.toInt()}..${anom.endRpm.toInt()} RPM)",
-                      style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  anom.title,
-                  style: const TextStyle(
-                    color: AppTheme.textPrimary,
-                    fontSize: 17,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  anom.observedValueText,
-                  style: TextStyle(
-                    color: Color(anom.severityColorHex),
-                    fontSize: 14,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // Ostrzeżenie przed mylnym tropem
-                if (anom.falseLeadWarning != null) ...[
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: AppTheme.orange.withAlpha(25),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: AppTheme.orange),
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Icon(Icons.psychology_alt, color: AppTheme.orange, size: 20),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            anom.falseLeadWarning!,
-                            style: const TextStyle(color: Color(0xFFFFD166), fontSize: 11.5, fontWeight: FontWeight.w600, height: 1.3),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                ],
-
-                // Skorelowane czujniki w tym samym ułamku sekundy
-                if (anom.correlatedSignals != null && anom.correlatedSignals!.isNotEmpty) ...[
-                  const Text(
-                    "STAN INNYCH CZUJNIKÓW W TYM SAMYM PUNKCIE:",
-                    style: TextStyle(color: AppTheme.cyan, fontSize: 10.5, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: anom.correlatedSignals!.entries.map((e) => Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: AppTheme.surfaceLight,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: AppTheme.cyan.withAlpha(80)),
-                      ),
-                      child: Text(
-                        "${e.key}: ${e.value}",
-                        style: const TextStyle(color: AppTheme.textPrimary, fontSize: 11),
-                      ),
-                    )).toList(),
-                  ),
-                  const SizedBox(height: 10),
-                ],
-
-                // Co czujniki wykluczają
-                if (anom.ruledOutCauses != null && anom.ruledOutCauses!.isNotEmpty) ...[
-                  const Text(
-                    "CO DEFINITYWNIE WYKLUCZONO:",
-                    style: TextStyle(color: AppTheme.green, fontSize: 10.5, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 4),
-                  ...anom.ruledOutCauses!.map((ro) => Padding(
-                    padding: const EdgeInsets.only(bottom: 2),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.check_circle, color: AppTheme.green, size: 12),
-                        const SizedBox(width: 4),
-                        Expanded(child: Text(ro, style: const TextStyle(color: AppTheme.green, fontSize: 11))),
-                      ],
-                    ),
-                  )),
-                  const SizedBox(height: 10),
-                ],
-
-                // Konkluzja przyczynowo-skutkowa
-                if (anom.rootCauseConclusion != null) ...[
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: AppTheme.purple.withAlpha(25),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: AppTheme.purple),
-                    ),
-                    child: Text(
-                      anom.rootCauseConclusion!,
-                      style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12, height: 1.35),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                ],
-
-                Text(
-                  anom.description,
-                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  "Co może być przyczyną usterki?",
-                  style: TextStyle(color: AppTheme.cyan, fontSize: 14, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 6),
-                ...anom.hypotheses.map((h) => Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text("• ", style: TextStyle(color: AppTheme.cyan, fontSize: 14)),
-                          Expanded(
-                            child: Text(
-                              h,
-                              style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12),
-                            ),
-                          ),
-                        ],
-                      ),
-                    )),
-                const SizedBox(height: 14),
-                const Text(
-                  "Zalecane kroki naprawcze:",
-                  style: TextStyle(color: AppTheme.orange, fontSize: 14, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 6),
-                ...anom.recommendations.map((r) => Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text("✓ ", style: TextStyle(color: AppTheme.orange, fontSize: 14)),
-                          Expanded(
-                            child: Text(
-                              r,
-                              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                            ),
-                          ),
-                        ],
-                      ),
-                    )),
-                const SizedBox(height: 16),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.cyan,
-                    foregroundColor: Colors.black,
-                    minimumSize: const Size.fromHeight(44),
-                  ),
-                  child: const Text("Zamknij podpowiedź"),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
     );
   }
 }

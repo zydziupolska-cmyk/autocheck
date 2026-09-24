@@ -2,7 +2,7 @@
 ///
 /// Zapis tekstowy — łatwo go przejrzeć, wysłać i wczytać ponownie:
 /// ```
-/// # AutoCheck sniff v1
+/// # Dynomic Diag sniff v1
 /// # start=2026-09-24T10:15:00.000
 /// # ids=11
 /// # label=Touran 1T 2.0 TDI
@@ -30,7 +30,7 @@ class SniffRecording {
 
   String toText() {
     final sb = StringBuffer()
-      ..writeln("# AutoCheck sniff v1")
+      ..writeln("# Dynomic Diag sniff v1")
       ..writeln("# start=${start.toIso8601String()}")
       ..writeln("# ids=${extendedIds ? 29 : 11}")
       ..writeln("# label=${label.replaceAll(RegExp(r'[\r\n]'), ' ')}");

@@ -469,7 +469,7 @@ class LoggingPreset {
     const LoggingPreset(
       id: "auto_diag",
       title: "Diagnostyka automatyczna (zalecane)",
-      description: "Wszystko, czego potrzebuje Asystent: obroty, pedał, doładowanie zadane i rzeczywiste, przepływ powietrza, szyna paliwa, VGT, EGR, DPF, temperatury. Parametry nieobsługiwane przez auto są pomijane.",
+      description: "Wszystko, czego potrzebuje Diagnoza: obroty, pedał, doładowanie zadane i rzeczywiste, przepływ powietrza, szyna paliwa, VGT, EGR, DPF, temperatury. Parametry nieobsługiwane przez auto są pomijane.",
       pidShortNames: [
         "RPM", "PEDAL", "TPS", "LOAD", "SPEED", "BOOST", "TARGET_BOOST", "MAF", "F_RAIL", "RAIL_TGT",
         "VGT_CMD", "VGT_ACT", "WG_CMD", "WG_ACT", "EGR_CMD", "EGR_ACT", "DPF_DP", "EXH_P", "EGT",

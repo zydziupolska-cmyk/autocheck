@@ -154,7 +154,7 @@ class DtcCode {
         "Uszkodzone przewody czujnika różnicy ciśnień",
       ],
       diagnosticsSteps: [
-        "Nagraj jazdę z różnicą ciśnień DPF i przepływem powietrza — Asystent oceni opór filtra względem przepływu.",
+        "Nagraj jazdę z różnicą ciśnień DPF i przepływem powietrza — Diagnoza oceni opór filtra względem przepływu.",
         "Sprawdź przewody czujnika różnicy ciśnień.",
       ],
     ),

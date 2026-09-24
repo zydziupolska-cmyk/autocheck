@@ -587,15 +587,15 @@ class DataloggerService extends ChangeNotifier {
     try {
       final dir = await getApplicationDocumentsDirectory();
       final now = source?.createdAt ?? DateTime.now();
-      final filename = "autocheck_${now.year}${_two(now.month)}${_two(now.day)}_${_two(now.hour)}${_two(now.minute)}${_two(now.second)}.csv";
+      final filename = "dynomic_${now.year}${_two(now.month)}${_two(now.day)}_${_two(now.hour)}${_two(now.minute)}${_two(now.second)}.csv";
       final file = File("${dir.path}/$filename");
       await file.writeAsString(buffer.toString());
 
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(file.path)],
-          subject: "Log AutoCheck - ${source?.title ?? now.toIso8601String()}",
-          text: "Log parametrów silnika zarejestrowany przez AutoCheck. "
+          subject: "Log Dynomic Diag - ${source?.title ?? now.toIso8601String()}",
+          text: "Log parametrów silnika zarejestrowany przez Dynomic Diag. "
               "${source?.vehicleLabel ?? ''} Wykrytych anomalii: $anomalyCount",
         ),
       );
