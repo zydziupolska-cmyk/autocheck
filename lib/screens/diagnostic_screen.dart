@@ -5,515 +5,321 @@ import '../models/log_point.dart';
 import '../models/anomaly.dart';
 import '../services/datalogger_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/ui.dart';
 
 class DiagnosticScreen extends StatelessWidget {
   final void Function(int tabIndex)? onNavigateToTab;
 
   const DiagnosticScreen({super.key, this.onNavigateToTab});
 
+  static Color toneOf(AnomalySeverity s) {
+    switch (s) {
+      case AnomalySeverity.critical:
+        return AppTheme.fault;
+      case AnomalySeverity.warning:
+      case AnomalySeverity.tampering:
+        return AppTheme.warn;
+      case AnomalySeverity.info:
+        return AppTheme.info;
+    }
+  }
+
+  static String severityLabel(AnomalySeverity s) {
+    switch (s) {
+      case AnomalySeverity.critical:
+        return "Usterka";
+      case AnomalySeverity.warning:
+        return "Ostrzeżenie";
+      case AnomalySeverity.tampering:
+        return "Ingerencja w układ";
+      case AnomalySeverity.info:
+        return "Informacja";
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final logger = Provider.of<DataloggerService>(context);
     final anomalies = logger.detectedAnomalies;
     final session = logger.activeSession;
+    final hasLog = session != null && session.points.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Row(
-          children: [
-            Icon(Icons.psychology, color: AppTheme.cyan),
-            SizedBox(width: 8),
-            Text("Asystent Diagnostyczny"),
-          ],
-        ),
+        title: const Text("Diagnoza"),
+        actions: [
+          if (hasLog)
+            Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: Center(
+                child: Text(
+                  anomalies.isEmpty ? "bez usterek" : "${anomalies.length} ${anomalies.length == 1 ? 'wynik' : 'wyniki'}",
+                  style: const TextStyle(color: AppTheme.textMuted, fontSize: 13),
+                ),
+              ),
+            ),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        children: [
+          if (!hasLog)
+            const Notice("Brak logu do analizy. Nagraj jazdę w zakładce Rejestrator albo wybierz log w Historii.")
+          else ...[
+            _sessionSummary(session),
+            const SizedBox(height: 12),
+            if (anomalies.isEmpty)
+              const Notice(
+                "Parametry dostępne w tym logu nie wskazują usterki. Poniżej: czego ten log nie pozwolił ocenić.",
+                tone: AppTheme.ok,
+              )
+            else
+              for (final a in anomalies) AnomalyCard(anomaly: a, onShowChart: () => onNavigateToTab?.call(3)),
+            for (final note in DriveAnalyzer.coverageNotes(session.points, isDiesel: session.isDiesel))
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.info_outline, color: AppTheme.textMuted, size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(note, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5)),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _sessionSummary(LogSession session) {
+    Widget cell(String label, String value) => Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Podsumowanie stanu silnika (tylko gdy jest co analizować)
-            if (session == null || session.points.isEmpty)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppTheme.surface,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppTheme.border),
-                ),
-                child: const Text(
-                  "Brak logu do analizy. Nagraj jazdę w zakładce „Rejestrator” albo wybierz log z „Historii”.",
-                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-                ),
-              )
-            else
-              _buildHealthBanner(anomalies),
-
-            const SizedBox(height: 16),
-
-            // Karta parametrów szczytowych
-            if (session != null) _buildSessionSummary(session),
-
-            const SizedBox(height: 20),
-
-            // Tytuł listy usterek
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  "WYKRYTE USTERKI I ZAGROŻENIA",
-                  style: TextStyle(
-                    color: AppTheme.textSecondary,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.0,
-                  ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: anomalies.isEmpty ? AppTheme.green.withAlpha(30) : AppTheme.red.withAlpha(30),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    "${anomalies.length} wykrytych",
-                    style: TextStyle(
-                      color: anomalies.isEmpty ? AppTheme.green : AppTheme.red,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-
-            if (anomalies.isEmpty)
-              _buildCleanEngineCard()
-            else
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: anomalies.length,
-                itemBuilder: (context, index) {
-                  return _buildAnomalyCard(context, anomalies[index]);
-                },
-              ),
-
-            // Czego ten log nie pozwolił ocenić
-            if (session != null && session.points.isNotEmpty)
-              for (final note in DriveAnalyzer.coverageNotes(session.points, isDiesel: session.isDiesel))
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Icon(Icons.info_outline, color: AppTheme.textMuted, size: 16),
-                      const SizedBox(width: 6),
-                      Expanded(child: Text(note, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12))),
-                    ],
-                  ),
-                ),
+            Text(label, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11)),
+            Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: AppTheme.readout.copyWith(fontSize: 14.5)),
           ],
         ),
       ),
     );
-  }
-
-  Widget _buildHealthBanner(List<Anomaly> anomalies) {
-    final hasCritical = anomalies.any((a) => a.severity == AnomalySeverity.critical);
-    final hasWarning = anomalies.any((a) => a.severity == AnomalySeverity.warning);
-
-    Color color;
-    IconData icon;
-    String title;
-    String desc;
-
-    if (hasCritical) {
-      color = AppTheme.red;
-      icon = Icons.error_outline;
-      title = "WYKRYTO POWAŻNĄ USTERKĘ";
-      desc = "Wykryto usterkę, która powoduje utratę mocy lub grozi uszkodzeniem silnika. Poniżej opis przyczyny i co zrobić.";
-    } else if (hasWarning) {
-      color = AppTheme.orange;
-      icon = Icons.warning_amber_rounded;
-      title = "WYKRYTO OSTRZEŻENIA WYMAGAJĄCE UWAGI";
-      desc = "Silnik pracuje, ale parametry odbiegają od optymalnych. Może występować spadek mocy lub początek usterki osprzętu.";
-    } else {
-      color = AppTheme.green;
-      icon = Icons.check_circle_outline;
-      title = "WSZYSTKIE PARAMETRY W NORMIE!";
-      desc = "Parametry dostępne w tym logu nie wskazują usterki. Sprawdź poniżej, czy log obejmował wszystko, co da się ocenić.";
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: color.withAlpha(20),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color, width: 1.5),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color, size: 32),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(color: color, fontSize: 14, fontWeight: FontWeight.w900),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  desc,
-                  style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSessionSummary(LogSession session) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            "PODSUMOWANIE LOGU",
-            style: TextStyle(color: AppTheme.textMuted, fontSize: 11, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _metricTile("MAX RPM", "${session.peakRpm.toInt()}", AppTheme.blue),
-              _metricTile("MAX BOOST", "${session.peakBoost.toStringAsFixed(2)} bar", AppTheme.cyan),
-              _metricTile("TRYB", session.mode == LogMode.pull ? "Przyspieszenie" : "Jazda", AppTheme.purple),
-              _metricTile("CZAS", "${session.durationSec.toStringAsFixed(1)} s", AppTheme.yellow),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _metricTile(String label, String val, Color color) {
-    return Column(
-      children: [
-        Text(label, style: const TextStyle(color: AppTheme.textMuted, fontSize: 10)),
-        const SizedBox(height: 2),
-        Text(val, style: TextStyle(color: color, fontSize: 15, fontWeight: FontWeight.bold)),
-      ],
-    );
-  }
-
-  Widget _buildCleanEngineCard() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: const Center(
-        child: Column(
+    const div = VerticalDivider(width: 1);
+    return Panel(
+      padding: EdgeInsets.zero,
+      child: IntrinsicHeight(
+        child: Row(
           children: [
-            Icon(Icons.verified, color: AppTheme.green, size: 48),
-            SizedBox(height: 10),
-            Text(
-              "Brak wykrytych anomalii",
-              style: TextStyle(color: AppTheme.textPrimary, fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            SizedBox(height: 6),
-            Text(
-              "Czujniki zachowywały się zgodnie z oczekiwaniami sterownika.",
-              textAlign: TextAlign.center,
-              style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-            ),
+            cell(session.mode == LogMode.pull ? "Przyspieszenie" : "Jazda", "${session.durationSec.toStringAsFixed(1)} s"),
+            div,
+            cell("Maks. obroty", "${session.peakRpm.toInt()}"),
+            div,
+            cell("Maks. doładowanie", "${session.peakBoost.toStringAsFixed(2)} bar"),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildAnomalyCard(BuildContext context, Anomaly anom) {
-    final color = Color(anom.severityColorHex);
+/// Karta wyniku diagnozy (używana też w arkuszu na wykresie).
+class AnomalyCard extends StatefulWidget {
+  final Anomaly anomaly;
+  final VoidCallback? onShowChart;
+  const AnomalyCard({super.key, required this.anomaly, this.onShowChart});
 
-    return Container(
+  @override
+  State<AnomalyCard> createState() => _AnomalyCardState();
+}
+
+class _AnomalyCardState extends State<AnomalyCard> {
+  bool _expanded = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final a = widget.anomaly;
+    final onShowChart = widget.onShowChart;
+    final tone = DiagnosticScreen.toneOf(a.severity);
+    final conclusion = a.rootCauseConclusion?.split("\n") ?? const <String>[];
+    final mainCause = conclusion.isNotEmpty ? conclusion.first : null;
+    final evidence = conclusion
+        .skip(1)
+        .map((l) => l.replaceFirst(RegExp(r'^•\s*'), ""))
+        .where((l) => l.trim().isNotEmpty)
+        .toList();
+
+    return Panel(
       margin: const EdgeInsets.only(bottom: 12),
-      child: Material(
-        color: AppTheme.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: color.withAlpha(120), width: 1.2),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Theme(
-          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-          child: ExpansionTile(
-          initiallyExpanded: true,
-          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          leading: CircleAvatar(
-            backgroundColor: color.withAlpha(35),
-            child: Icon(
-              anom.severity == AnomalySeverity.critical ? Icons.dangerous : Icons.warning,
-              color: color,
-            ),
-          ),
-          title: Text(
-            anom.title,
-            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 15, fontWeight: FontWeight.bold),
-          ),
-          subtitle: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 2),
-              Text(
-                "${anom.startSec.toStringAsFixed(1)}s - ${anom.endSec.toStringAsFixed(1)}s (${anom.startRpm.toInt()}..${anom.endRpm.toInt()} RPM)",
-                style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                anom.observedValueText,
-                style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: Column(
+      stripe: tone,
+      padding: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Divider(color: AppTheme.border),
-                  const SizedBox(height: 6),
-
-                  // Wniosek prostym językiem — co jest nie tak i co zrobić
-                  if (anom.plainSummary != null) ...[
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: color.withAlpha(22),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: color, width: 1.2),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            "CO TO ZNACZY:",
-                            style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 0.6),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            anom.plainSummary!,
-                            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14, fontWeight: FontWeight.w600, height: 1.35),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-
-                  // Ostrzeżenie przed mylnym tropem (np. błąd czujnika vs rzeczywista usterka)
-                  if (anom.falseLeadWarning != null) ...[
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppTheme.orange.withAlpha(25),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppTheme.orange, width: 1.2),
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Icon(Icons.psychology_alt, color: AppTheme.orange, size: 24),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              anom.falseLeadWarning!,
-                              style: const TextStyle(
-                                color: Color(0xFFFFD166),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                height: 1.35,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-
-                  // Korelacja wieloczujnikowa (Stan pozostałych czujników w tej samej chwili)
-                  if (anom.correlatedSignals != null && anom.correlatedSignals!.isNotEmpty) ...[
-                    const Text(
-                      "CO POKAZAŁY POZOSTAŁE CZUJNIKI W TYM SAMYM CZASIE:",
-                      style: TextStyle(color: AppTheme.cyan, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.8),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: anom.correlatedSignals!.entries.map((entry) {
-                        return Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: AppTheme.surfaceLight,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: AppTheme.cyan.withAlpha(100)),
-                          ),
-                          child: Text.rich(
-                            TextSpan(children: [
-                              TextSpan(
-                                text: "${entry.key}: ",
-                                style: const TextStyle(color: AppTheme.cyan, fontSize: 11, fontWeight: FontWeight.w900),
-                              ),
-                              TextSpan(
-                                text: entry.value,
-                                style: const TextStyle(color: AppTheme.textPrimary, fontSize: 11, fontWeight: FontWeight.w600),
-                              ),
-                            ]),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-
-                  // Przyczyny wykluczone przez inne parametry
-                  if (anom.ruledOutCauses != null && anom.ruledOutCauses!.isNotEmpty) ...[
-                    const Text(
-                      "CO WYKLUCZAJĄ POZOSTAŁE CZUJNIKI:",
-                      style: TextStyle(color: AppTheme.green, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.8),
-                    ),
-                    const SizedBox(height: 6),
-                    ...anom.ruledOutCauses!.map((ro) => Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Icon(Icons.check_circle, color: AppTheme.green, size: 14),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  ro,
-                                  style: const TextStyle(color: AppTheme.green, fontSize: 12, fontWeight: FontWeight.w500),
-                                ),
-                              ),
-                            ],
-                          ),
-                        )),
-                    const SizedBox(height: 12),
-                  ],
-
-                  // Kluczowy wniosek techniczny i mechanizm usterki
-                  if (anom.rootCauseConclusion != null) ...[
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppTheme.purple.withAlpha(25),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppTheme.purple, width: 1.2),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.auto_awesome, color: AppTheme.purple, size: 18),
-                              SizedBox(width: 8),
-                              Text(
-                                "GŁÓWNY WNIOSEK I MECHANIZM USTERKI:",
-                                style: TextStyle(color: AppTheme.purple, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 0.6),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            anom.rootCauseConclusion!,
-                            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12.5, height: 1.4),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-
-                  Text(
-                    anom.description,
-                    style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    "CO MOŻE BYĆ PRZYCZYNĄ USTERKI?",
-                    style: TextStyle(color: AppTheme.cyan, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.8),
-                  ),
-                  const SizedBox(height: 6),
-                  ...anom.hypotheses.map((h) => Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
                           children: [
-                            const Text("• ", style: TextStyle(color: AppTheme.cyan, fontSize: 14)),
+                            StatusDot(tone, size: 7),
+                            const SizedBox(width: 6),
+                            Text(
+                              DiagnosticScreen.severityLabel(a.severity),
+                              style: TextStyle(color: tone, fontSize: 11.5, fontWeight: FontWeight.w600),
+                            ),
+                            const SizedBox(width: 8),
                             Expanded(
-                              child: Text(h, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 12)),
+                              child: Text(
+                                "${a.startSec.toStringAsFixed(1)}–${a.endSec.toStringAsFixed(1)} s • ${a.startRpm.toInt()}–${a.endRpm.toInt()} obr/min",
+                                style: const TextStyle(color: AppTheme.textMuted, fontSize: 11.5, fontFeatures: AppTheme.tabular),
+                              ),
                             ),
                           ],
                         ),
-                      )),
-                  const SizedBox(height: 12),
-                  const Text(
-                    "KROK PO KROKU – CO NALEŻY ZROBIĆ / SPRAWDZIĆ:",
-                    style: TextStyle(color: AppTheme.orange, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.8),
-                  ),
-                  const SizedBox(height: 6),
-                  ...anom.recommendations.map((r) => Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text("✓ ", style: TextStyle(color: AppTheme.orange, fontSize: 14)),
-                            Expanded(
-                              child: Text(r, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
-                            ),
-                          ],
-                        ),
-                      )),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: () => onNavigateToTab?.call(3), // Przejdź do wykresu
-                    icon: const Icon(Icons.show_chart),
-                    label: const Text("Pokaż to miejsce na wykresie"),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppTheme.cyan,
-                      side: const BorderSide(color: AppTheme.cyan),
-                      minimumSize: const Size.fromHeight(40),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        const SizedBox(height: 4),
+                        Text(a.title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, height: 1.3)),
+                        const SizedBox(height: 4),
+                        Text(a.observedValueText, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+                      ],
                     ),
                   ),
+                  Icon(_expanded ? Icons.expand_less : Icons.expand_more, color: AppTheme.textMuted),
                 ],
               ),
             ),
-          ],
-        ),
+          ),
+          if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Divider(),
+                  const SizedBox(height: 12),
+                  if (a.plainSummary != null) ...[
+                    Text(a.plainSummary!, style: const TextStyle(fontSize: 14, height: 1.4)),
+                    const SizedBox(height: 14),
+                  ],
+                  if (mainCause != null) ...[
+                    const SectionLabel("Najbardziej prawdopodobna przyczyna"),
+                    Text(mainCause, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, height: 1.35)),
+                    for (final e in evidence)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text("• $e", style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5)),
+                      ),
+                    const SizedBox(height: 14),
+                  ],
+                  if (a.falseLeadWarning != null) ...[
+                    Notice(a.falseLeadWarning!, tone: AppTheme.warn),
+                    const SizedBox(height: 14),
+                  ],
+                  if (a.correlatedSignals != null && a.correlatedSignals!.isNotEmpty) ...[
+                    const SectionLabel("Pozostałe parametry w tym czasie"),
+                    Panel(
+                      padding: EdgeInsets.zero,
+                      child: Column(
+                        children: [
+                          for (final (i, e) in a.correlatedSignals!.entries.indexed) ...[
+                            if (i > 0) const Divider(),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  SizedBox(
+                                    width: 110,
+                                    child: Text(e.key, style: const TextStyle(color: AppTheme.textMuted, fontSize: 12.5)),
+                                  ),
+                                  Expanded(
+                                    child: Text(e.value, style: const TextStyle(fontSize: 12.5, fontFeatures: AppTheme.tabular)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                  ],
+                  if (a.ruledOutCauses != null && a.ruledOutCauses!.isNotEmpty) ...[
+                    const SectionLabel("Wykluczone"),
+                    for (final ro in a.ruledOutCauses!)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 5),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Padding(
+                              padding: EdgeInsets.only(top: 1),
+                              child: Icon(Icons.check, color: AppTheme.ok, size: 15),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(ro, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    const SizedBox(height: 10),
+                  ],
+                  if (a.hypotheses.isNotEmpty) ...[
+                    const SectionLabel("Możliwe przyczyny"),
+                    for (final h in a.hypotheses)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text("• $h", style: const TextStyle(fontSize: 13)),
+                      ),
+                    const SizedBox(height: 10),
+                  ],
+                  if (a.recommendations.isNotEmpty) ...[
+                    const SectionLabel("Co sprawdzić"),
+                    for (final (i, r) in a.recommendations.indexed)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 5),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 20,
+                              child: Text(
+                                "${i + 1}.",
+                                style: const TextStyle(color: AppTheme.textMuted, fontSize: 13, fontFeatures: AppTheme.tabular),
+                              ),
+                            ),
+                            Expanded(child: Text(r, style: const TextStyle(fontSize: 13))),
+                          ],
+                        ),
+                      ),
+                    const SizedBox(height: 10),
+                  ],
+                  if (a.description.isNotEmpty) ...[
+                    Text(a.description, style: const TextStyle(color: AppTheme.textMuted, fontSize: 12.5, height: 1.4)),
+                    const SizedBox(height: 12),
+                  ],
+                  if (onShowChart != null)
+                    OutlinedButton.icon(
+                      onPressed: onShowChart,
+                      icon: const Icon(Icons.show_chart, size: 18),
+                      label: const Text("Pokaż na wykresie"),
+                    ),
+                ],
+              ),
+            ),
+        ],
       ),
-    ),
-  );
+    );
   }
 }

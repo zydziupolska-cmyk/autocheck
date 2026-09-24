@@ -129,7 +129,7 @@ class SniffService extends ChangeNotifier {
   }
 
   Future<void> share(File f) async {
-    await SharePlus.instance.share(ShareParams(files: [XFile(f.path)], text: "Nagranie magistrali AutoCheck"));
+    await SharePlus.instance.share(ShareParams(files: [XFile(f.path)], text: "Nagranie magistrali Dynomic Diag"));
   }
 
   @override

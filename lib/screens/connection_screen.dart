@@ -5,9 +5,9 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
 import 'package:provider/provider.dart';
 import '../models/dtc_code.dart';
-import '../models/vehicle_info.dart';
 import '../services/obd_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/ui.dart';
 import 'learning_screen.dart';
 
 class ConnectionScreen extends StatefulWidget {
@@ -59,7 +59,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
     if ((statuses[Permission.bluetoothScan]?.isDenied ?? false) ||
         (statuses[Permission.bluetoothScan]?.isPermanentlyDenied ?? false)) {
-      _showSnack("Brak uprawnień do skanowania Bluetooth", AppTheme.red);
+      _showSnack("Brak uprawnień do skanowania Bluetooth", AppTheme.fault);
       return;
     }
 
@@ -67,7 +67,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     final error = await obd.startScan(onResults: (results) {
       if (mounted) setState(() => _scanResults = results);
     });
-    if (error != null) _showSnack(error, AppTheme.red);
+    if (error != null) _showSnack(error, AppTheme.fault);
   }
 
   Future<void> _connect(Future<bool> Function() action) async {
@@ -77,7 +77,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     if (ok) {
       setState(() => _scannedDtcCodes = null);
     } else {
-      _showSnack(obd.statusMessage, AppTheme.red);
+      _showSnack(obd.statusMessage, AppTheme.fault);
     }
   }
 
@@ -100,7 +100,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         obd.status == ObdConnectionStatus.connected
             ? "Sterownik nie odpowiedział na zapytanie o kody błędów."
             : "Najpierw połącz się z samochodem.",
-        AppTheme.red,
+        AppTheme.fault,
       );
     }
   }
@@ -111,8 +111,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        title: const Text("Adapter i możliwości", style: TextStyle(color: AppTheme.textPrimary)),
+        title: const Text("Adapter i możliwości"),
         content: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -134,7 +133,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             onPressed: () {
               Clipboard.setData(ClipboardData(text: text));
               Navigator.pop(ctx);
-              _showSnack("Skopiowano informacje o adapterze", AppTheme.green);
+              _showSnack("Skopiowano informacje o adapterze", AppTheme.ok);
             },
             child: const Text("Kopiuj"),
           ),
@@ -183,8 +182,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        title: const Text("Skasować kody błędów?", style: TextStyle(color: AppTheme.textPrimary)),
+        title: const Text("Skasować kody usterek?"),
         content: const Text(
           "Zapłon musi być włączony, a silnik wyłączony. Skasowanie usuwa też dane "
           "gotowości (readiness) i zapisane zamrożone ramki — nie usuwa przyczyny usterki.",
@@ -194,7 +192,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Anuluj")),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text("Skasuj", style: TextStyle(color: AppTheme.red)),
+            child: const Text("Skasuj", style: TextStyle(color: AppTheme.fault)),
           ),
         ],
       ),
@@ -207,7 +205,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       ok
           ? "Sterownik potwierdził skasowanie błędów."
           : "Sterownik nie potwierdził kasowania. Wyłącz silnik (zapłon ON) i spróbuj ponownie.",
-      ok ? AppTheme.green : AppTheme.red,
+      ok ? AppTheme.ok : AppTheme.fault,
     );
     if (ok) await _readDtc(obd);
   }
@@ -215,59 +213,49 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   @override
   Widget build(BuildContext context) {
     final obd = context.watch<ObdService>();
+    final connected = obd.status == ObdConnectionStatus.connected;
+
+    final connectionMethods = [
+      _buildBluetoothSection(obd),
+      const SizedBox(height: 20),
+      _buildClassicBluetoothSection(obd),
+      const SizedBox(height: 20),
+      _buildWifiSection(obd),
+    ];
 
     return Scaffold(
       appBar: AppBar(
-        title: const Row(
-          children: [
-            Icon(Icons.bluetooth_connected, color: AppTheme.cyan),
-            SizedBox(width: 8),
-            Text("AutoCheck - Połączenie OBD"),
-          ],
-        ),
+        title: const BrandTitle(),
+        actions: [
+          if (connected)
+            IconButton(
+              icon: const Icon(Icons.info_outline),
+              tooltip: "Adapter i możliwości",
+              onPressed: () => _showAdapterInfo(obd),
+            ),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Karta aktualnego statusu
-            _buildStatusCard(obd),
-
-            // Karta Identyfikacji Pojazdu z ECU (VIN, Rocznik, Silnik, Sterownik)
-            if (obd.vehicleInfo != null) ...[
-              const SizedBox(height: 20),
-              _buildVehicleInfoCard(obd),
-            ],
-
-            const SizedBox(height: 20),
-
-            
-            // Sekcja vLinker / Wi-Fi
-            _buildWifiSection(obd),
-
-            const SizedBox(height: 24),
-
-            // Sekcja Classic Bluetooth (Sparowane)
-            _buildClassicBluetoothSection(obd),
-            
-            const SizedBox(height: 24),
-
-            // Sekcja vLinker MC+ / Bluetooth
-            _buildBluetoothSection(obd),
-
-            const SizedBox(height: 24),
-
-            // Sekcja Skanera Czujników Samochodu (ECU PID Discovery)
-            _buildPidScannerSection(obd),
-
-            const SizedBox(height: 24),
-
-            // Sekcja Diagnostyki Błędów Silnika (DTC / Check Engine)
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        children: [
+          _buildStatusCard(obd),
+          const SizedBox(height: 16),
+          if (connected) ...[
             _buildDtcScannerSection(obd),
-
-          ],
-        ),
+            const SizedBox(height: 16),
+            _buildPidScannerSection(obd),
+            const SizedBox(height: 16),
+            Panel(
+              padding: EdgeInsets.zero,
+              child: ExpansionTile(
+                title: const Text("Połącz z innym adapterem", style: TextStyle(fontSize: 14)),
+                childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                children: connectionMethods,
+              ),
+            ),
+          ] else
+            ...connectionMethods,
+        ],
       ),
     );
   }
@@ -276,129 +264,126 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       obd.status == ObdConnectionStatus.connecting || obd.status == ObdConnectionStatus.initializing;
 
   Widget _buildStatusCard(ObdService obd) {
-    Color badgeColor;
-    IconData badgeIcon;
-
+    final Color tone;
+    final String title;
     switch (obd.status) {
       case ObdConnectionStatus.connected:
-        badgeColor = AppTheme.green;
-        badgeIcon = Icons.check_circle;
-        break;
+        tone = AppTheme.ok;
+        title = "Połączono z autem";
       case ObdConnectionStatus.connecting:
       case ObdConnectionStatus.initializing:
-        badgeColor = AppTheme.yellow;
-        badgeIcon = Icons.sync;
-        break;
+        tone = AppTheme.warn;
+        title = "Łączenie…";
       case ObdConnectionStatus.error:
-        badgeColor = AppTheme.red;
-        badgeIcon = Icons.error;
-        break;
+        tone = AppTheme.fault;
+        title = "Błąd połączenia";
       case ObdConnectionStatus.disconnected:
-        badgeColor = AppTheme.textMuted;
-        badgeIcon = Icons.power_off;
-        break;
+        tone = AppTheme.textMuted;
+        title = "Brak połączenia";
     }
+    final v = obd.vehicleInfo;
+    final connected = obd.status == ObdConnectionStatus.connected;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: badgeColor.withAlpha(120), width: 1.5),
-      ),
-      child: Row(
-        children: [
-          CircleAvatar(
-            backgroundColor: badgeColor.withAlpha(40),
-            radius: 24,
-            child: Icon(badgeIcon, color: badgeColor, size: 28),
+    TableRow row(String k, String val, {bool mono = false, Color? color}) => TableRow(children: [
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6, right: 12),
+            child: Text(k, style: const TextStyle(color: AppTheme.textMuted, fontSize: 12.5)),
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(val,
+                style: TextStyle(
+                  color: color ?? AppTheme.textPrimary,
+                  fontSize: 12.5,
+                  fontFeatures: AppTheme.tabular,
+                  fontFamily: mono ? "monospace" : null,
+                )),
+          ),
+        ]);
+
+    return Panel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              StatusDot(tone),
+              const SizedBox(width: 10),
+              Expanded(child: Text(title, style: AppTheme.sectionTitle)),
+              if (_isBusy(obd))
+                const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+              if (connected) ...[
+                if (v != null)
+                  IconButton(
+                    icon: const Icon(Icons.refresh, size: 20),
+                    tooltip: "Odśwież dane pojazdu",
+                    onPressed: () => obd.readVehicleInfo(),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.link_off, size: 20),
+                  tooltip: "Rozłącz",
+                  onPressed: () => obd.disconnect(),
+                ),
+              ],
+            ],
+          ),
+          if (!connected) ...[
+            const SizedBox(height: 6),
+            Text(
+              obd.status == ObdConnectionStatus.disconnected
+                  ? "Włącz zapłon, wepnij adapter w gniazdo OBD i wybierz sposób połączenia poniżej."
+                  : obd.statusMessage,
+              style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
+            ),
+          ],
+          if (connected) ...[
+            const SizedBox(height: 10),
+            Table(
+              columnWidths: const {0: IntrinsicColumnWidth(), 1: FlexColumnWidth()},
               children: [
-                Text(
-                  "STATUS POŁĄCZENIA",
-                  style: TextStyle(
-                    color: badgeColor,
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.0,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  obd.statusMessage,
-                  style: const TextStyle(
-                    color: AppTheme.textPrimary,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (obd.status == ObdConnectionStatus.connected && obd.adapterId.isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    "Adapter: ${obd.stnId ?? obd.adapterId}${obd.protocolName.isNotEmpty ? ' • ${obd.protocolName}' : ''}",
-                    style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
-                  ),
-                  GestureDetector(
-                    onTap: () => _showAdapterInfo(obd),
-                    child: const Padding(
-                      padding: EdgeInsets.only(top: 4),
-                      child: Text("Szczegóły adaptera ›",
-                          style: TextStyle(color: AppTheme.cyan, fontSize: 12, fontWeight: FontWeight.w600)),
-                    ),
+                if (v != null) ...[
+                  row("Pojazd", "${v.manufacturer} ${v.modelName}${v.year.isNotEmpty ? ' • ${v.year}' : ''}"),
+                  row("VIN", v.vin, mono: true),
+                  row("Silnik", v.engineDescription),
+                  row("Sterownik", "${v.calibrationId}${obd.engineEcuAddress != null ? ' • ${obd.engineEcuAddress}' : ''}"),
+                  row("Napięcie", "${v.batteryVoltage.toStringAsFixed(1)} V"),
+                  row(
+                    "Od kasowania DTC",
+                    "${v.distanceSinceDtcClearedKm} km${v.distanceWithMilOnKm > 0 ? ' • z kontrolką ${v.distanceWithMilOnKm} km' : ''}",
+                    color: v.distanceSinceDtcClearedKm < 50 ? AppTheme.warn : null,
                   ),
                 ],
+                row("Adapter", obd.stnId ?? obd.adapterId),
+                if (obd.protocolName.isNotEmpty) row("Protokół", obd.protocolName.replaceFirst("AUTO, ", "")),
               ],
             ),
-          ),
-          if (obd.status == ObdConnectionStatus.connected)
-            IconButton(
-              icon: const Icon(Icons.close, color: AppTheme.red),
-              tooltip: "Rozłącz",
-              onPressed: () => obd.disconnect(),
-            ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildWifiSection(ObdService obd) {
+  Widget _sectionHeader(String title, String description) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Row(
-          children: [
-            Icon(Icons.wifi, color: AppTheme.green, size: 20),
-            SizedBox(width: 8),
-            Text(
-              "Adapter ELM327 / vLinker (Wi-Fi)",
-              style: TextStyle(
-                color: AppTheme.textPrimary,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          "Wejdź w ustawienia Wi-Fi telefonu, połącz się z siecią adaptera (np. WiFi_OBDII) i kliknij przycisk poniżej.",
-          style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-        ),
-        const SizedBox(height: 12),
-        ElevatedButton.icon(
+        Text(title, style: AppTheme.sectionTitle),
+        const SizedBox(height: 4),
+        Text(description, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13)),
+        const SizedBox(height: 10),
+      ],
+    );
+  }
+
+  Widget _buildWifiSection(ObdService obd) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionHeader("Wi-Fi", "Połącz telefon z siecią adaptera (np. WiFi_OBDII) w ustawieniach Wi-Fi, potem naciśnij przycisk."),
+        OutlinedButton.icon(
           onPressed: _isBusy(obd) ? null : () => _connect(() => obd.connectWifi()),
-          icon: const Icon(Icons.wifi_tethering),
+          icon: const Icon(Icons.wifi, size: 18),
           label: const Text("Połącz przez Wi-Fi"),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppTheme.green,
-            foregroundColor: Colors.white,
-            minimumSize: const Size.fromHeight(48),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
         ),
       ],
     );
@@ -406,67 +391,49 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
   Widget _buildClassicBluetoothSection(ObdService obd) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Row(
-          children: [
-            Icon(Icons.bluetooth_audio, color: AppTheme.blue, size: 20),
-            SizedBox(width: 8),
-            Text(
-              "Starsze adaptery (Classic Bluetooth / Android)",
-              style: TextStyle(
-                color: AppTheme.textPrimary,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
+        _sectionHeader(
+          "Bluetooth — sparowane urządzenia",
+          "vLinker MC (Android) i zwykłe ELM327. Najpierw sparuj adapter w ustawieniach Bluetooth telefonu.",
         ),
-        const SizedBox(height: 8),
-        const Text(
-          "Jeśli masz vLinker MC-Android lub zwykły ELM327 na starym Androidzie, najpierw sparuj go w ustawieniach systemu, a potem wybierz z listy poniżej.",
-          style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-        ),
-        const SizedBox(height: 12),
         if (_isLoadingClassic)
-          const CircularProgressIndicator()
+          const Center(child: Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator()))
         else if (_classicError != null || _classicDevices.isEmpty)
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  _classicError ?? "Brak sparowanych urządzeń. Sparuj adapter w ustawieniach Bluetooth telefonu.",
-                  style: const TextStyle(color: AppTheme.red),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.refresh, color: AppTheme.cyan),
-                tooltip: "Odśwież listę",
-                onPressed: _loadClassicDevices,
-              ),
-            ],
-          )
-        else
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: _classicDevices.length,
-            itemBuilder: (context, index) {
-              final d = _classicDevices[index];
-              return Card(
-                color: AppTheme.surfaceLight,
-                child: ListTile(
-                  leading: const Icon(Icons.bluetooth_connected, color: AppTheme.blue),
-                  title: Text(d.name ?? "Nieznane urządzenie", style: const TextStyle(color: Colors.white)),
-                  subtitle: Text(d.address, style: const TextStyle(color: AppTheme.textMuted)),
-                  trailing: ElevatedButton(
-                    onPressed: _isBusy(obd) ? null : () => _connect(() => obd.connectClassic(d)),
-                    style: ElevatedButton.styleFrom(backgroundColor: AppTheme.cyan, foregroundColor: Colors.black),
-                    child: const Text("Połącz"),
+          Panel(
+            padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _classicError ?? "Brak sparowanych urządzeń.",
+                    style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
                   ),
                 ),
-              );
-            },
+                IconButton(icon: const Icon(Icons.refresh), tooltip: "Odśwież listę", onPressed: _loadClassicDevices),
+              ],
+            ),
+          )
+        else
+          Panel(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                for (int i = 0; i < _classicDevices.length; i++) ...[
+                  if (i > 0) const Divider(),
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.bluetooth, size: 20),
+                    title: Text(_classicDevices[i].name ?? "Nieznane urządzenie", style: const TextStyle(fontSize: 14)),
+                    subtitle: Text(_classicDevices[i].address, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11.5)),
+                    trailing: ElevatedButton(
+                      onPressed: _isBusy(obd) ? null : () => _connect(() => obd.connectClassic(_classicDevices[i])),
+                      child: const Text("Połącz"),
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
       ],
     );
@@ -474,95 +441,48 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
   Widget _buildBluetoothSection(ObdService obd) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Row(
-          children: [
-            Icon(Icons.bluetooth, color: AppTheme.blue, size: 20),
-            SizedBox(width: 8),
-            Text(
-              "Adapter vLinker MC+ (Bluetooth / BLE)",
-              style: TextStyle(
-                color: AppTheme.textPrimary,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          "Włącz zapłon w samochodzie, wepnij vLinker MC+ do gniazda OBD-II i uruchom wyszukiwanie.",
-          style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-        ),
-        const SizedBox(height: 12),
+        _sectionHeader("Bluetooth LE", "vLinker MC+ i inne adaptery BLE. Włącz zapłon i wyszukaj adapter."),
         ElevatedButton.icon(
           onPressed: obd.isScanning ? () => obd.stopScan() : () => _startScan(obd),
           icon: obd.isScanning
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                )
-              : const Icon(Icons.search),
-          label: Text(obd.isScanning ? "Zatrzymaj szukanie" : "Wyszukaj adapter BLE (vLinker MC+)"),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppTheme.blue,
-            foregroundColor: Colors.white,
-            minimumSize: const Size.fromHeight(48),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          ),
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.onAccent))
+              : const Icon(Icons.bluetooth_searching, size: 18),
+          label: Text(obd.isScanning ? "Zatrzymaj wyszukiwanie" : "Wyszukaj adapter"),
         ),
         if (_scanResults.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: _scanResults.length,
-            itemBuilder: (context, index) {
-              final r = _scanResults[index];
-              final name = r.device.platformName.isNotEmpty ? r.device.platformName : "Nieznane urządzenie OBD";
-              final isVlinker = name.toLowerCase().contains("vlinker") ||
-                  name.toLowerCase().contains("obd") ||
-                  name.toLowerCase().contains("v-link");
-
-              return Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                decoration: BoxDecoration(
-                  color: isVlinker ? AppTheme.blue.withAlpha(25) : AppTheme.surface,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: isVlinker ? AppTheme.cyan : AppTheme.border,
-                    width: isVlinker ? 1.5 : 1,
-                  ),
-                ),
-                child: ListTile(
-                  leading: Icon(
-                    Icons.bluetooth,
-                    color: isVlinker ? AppTheme.cyan : AppTheme.textMuted,
-                  ),
-                  title: Text(
-                    name,
-                    style: TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontWeight: isVlinker ? FontWeight.bold : FontWeight.normal,
-                    ),
-                  ),
-                  subtitle: Text(
-                    r.device.remoteId.str,
-                    style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
-                  ),
-                  trailing: ElevatedButton(
-                    onPressed: _isBusy(obd) ? null : () => _connect(() => obd.connectDevice(r.device)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: isVlinker ? AppTheme.cyan : AppTheme.surfaceLight,
-                      foregroundColor: isVlinker ? Colors.black : Colors.white,
-                    ),
-                    child: const Text("Połącz"),
-                  ),
-                ),
-              );
-            },
+          const SizedBox(height: 10),
+          Panel(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                for (int i = 0; i < _scanResults.length; i++) ...[
+                  if (i > 0) const Divider(),
+                  Builder(builder: (context) {
+                    final r = _scanResults[i];
+                    final name = r.device.platformName.isNotEmpty ? r.device.platformName : "Nieznane urządzenie";
+                    final lower = name.toLowerCase();
+                    final likelyObd = lower.contains("vlinker") || lower.contains("obd") || lower.contains("v-link");
+                    return ListTile(
+                      dense: true,
+                      leading: Icon(Icons.bluetooth, size: 20, color: likelyObd ? AppTheme.accent : AppTheme.textMuted),
+                      title: Text(name, style: TextStyle(fontSize: 14, fontWeight: likelyObd ? FontWeight.w600 : FontWeight.normal)),
+                      subtitle: Text(r.device.remoteId.str, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11.5)),
+                      trailing: likelyObd
+                          ? ElevatedButton(
+                              onPressed: _isBusy(obd) ? null : () => _connect(() => obd.connectDevice(r.device)),
+                              child: const Text("Połącz"),
+                            )
+                          : OutlinedButton(
+                              onPressed: _isBusy(obd) ? null : () => _connect(() => obd.connectDevice(r.device)),
+                              child: const Text("Połącz"),
+                            ),
+                    );
+                  }),
+                ],
+              ],
+            ),
           ),
         ],
       ],
@@ -570,75 +490,31 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   }
 
   Widget _buildPidScannerSection(ObdService obd) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Panel(
+      padding: EdgeInsets.zero,
+      child: ExpansionTile(
+        title: const Text("Parametry udostępniane przez auto", style: TextStyle(fontSize: 14)),
+        subtitle: Text(
+          "${obd.discoveredPids.length} parametrów${obd.engineEcuAddress != null ? ' • sterownik ${obd.engineEcuAddress}' : ''}",
+          style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+        ),
+        childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+        expandedCrossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Row(
-                children: [
-                  Icon(Icons.sensors, color: AppTheme.orange, size: 20),
-                  SizedBox(width: 8),
-                  Text(
-                    "Czujniki Pojazdu (ECU)",
-                    style: TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: AppTheme.orange.withAlpha(30),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  "${obd.discoveredPids.length} wykrytych",
-                  style: const TextStyle(
-                    color: AppTheme.orange,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            obd.status == ObdConnectionStatus.connected
-                ? "Parametry, które zgłosił sterownik silnika${obd.engineEcuAddress != null ? ' (${obd.engineEcuAddress})' : ''} w masce obsługiwanych PID-ów. Tylko te są odpytywane podczas logowania."
-                : "Po połączeniu AutoCheck odczyta maskę obsługiwanych PID-ów ze sterownika silnika i pokaże tylko te parametry, które auto faktycznie udostępnia.",
-            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-          ),
-          const SizedBox(height: 12),
           Wrap(
             spacing: 6,
             runSpacing: 6,
-            children: obd.discoveredPids.map((pid) {
-              return Chip(
-                backgroundColor: AppTheme.surfaceLight,
-                side: const BorderSide(color: AppTheme.border),
-                label: Text(
-                  "${pid.shortName} (${pid.unit})",
-                  style: TextStyle(
-                    color: Color(pid.colorValue),
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
+            children: [
+              for (final pid in obd.discoveredPids)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: AppTheme.border),
+                    borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
                   ),
+                  child: Text(pid.name, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11.5)),
                 ),
-              );
-            }).toList(),
+            ],
           ),
         ],
       ),
@@ -646,401 +522,128 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   }
 
   Widget _buildDtcScannerSection(ObdService obd) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.red.withAlpha(90)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Row(
+    final codes = _scannedDtcCodes;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Expanded(child: Text("Kody usterek", style: AppTheme.sectionTitle)),
+            if (codes != null)
+              Text(codes.isEmpty ? "brak" : "${codes.length}",
+                  style: TextStyle(color: codes.isEmpty ? AppTheme.ok : AppTheme.fault, fontWeight: FontWeight.w600)),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: _isLoadingDtc ? null : () => _readDtc(obd),
+                icon: _isLoadingDtc
+                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.onAccent))
+                    : const Icon(Icons.search, size: 18),
+                label: const Text("Odczytaj kody"),
+              ),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: _isLoadingDtc ? null : () => _clearDtc(obd),
+              icon: const Icon(Icons.delete_outline, size: 18),
+              label: const Text("Skasuj"),
+            ),
+          ],
+        ),
+        if (obd.canScanVagModules) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _moduleScanProgress != null || _isLoadingDtc ? null : () => _scanVagModules(obd),
+            icon: _moduleScanProgress != null
+                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.account_tree_outlined, size: 18),
+            label: Text(_moduleScanProgress ?? "Skanuj wszystkie moduły (VAG)"),
+          ),
+        ],
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LearningScreen())),
+          icon: const Icon(Icons.hearing, size: 18),
+          label: const Text("Nauka od testera (kabel Y)"),
+        ),
+        if (_moduleScanSummary != null) ...[
+          const SizedBox(height: 10),
+          Text(_moduleScanSummary!, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5)),
+        ],
+        if (_dtcReadFailed) ...[
+          const SizedBox(height: 10),
+          const Notice("Nie udało się odczytać pamięci usterek. Sprawdź połączenie i włącz zapłon.", tone: AppTheme.fault),
+        ],
+        if (codes != null) ...[
+          const SizedBox(height: 10),
+          if (codes.isEmpty)
+            const Notice("Brak zapisanych i oczekujących kodów usterek.", tone: AppTheme.ok)
+          else
+            Panel(
+              padding: EdgeInsets.zero,
+              child: Column(
                 children: [
-                  Icon(Icons.troubleshoot, color: AppTheme.red, size: 20),
-                  SizedBox(width: 8),
-                  Text(
-                    "Odczyt Błędów Silnika (DTC)",
-                    style: TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  for (int i = 0; i < codes.length; i++) ...[
+                    if (i > 0) const Divider(),
+                    _dtcTile(codes[i]),
+                  ],
                 ],
               ),
-              if (_scannedDtcCodes != null)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: _scannedDtcCodes!.isEmpty
-                        ? AppTheme.green.withAlpha(30)
-                        : AppTheme.red.withAlpha(30),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    "${_scannedDtcCodes!.length} błędów",
-                    style: TextStyle(
-                      color: _scannedDtcCodes!.isEmpty ? AppTheme.green : AppTheme.red,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            "Odczytuje zarejestrowane błędy z pamięci komputera ECU (np. błąd ciśnienia paliwa P0087, wypadanie zapłonów P0301).",
-            style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _isLoadingDtc ? null : () => _readDtc(obd),
-                  icon: _isLoadingDtc
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                        )
-                      : const Icon(Icons.search),
-                  label: const Text("Odczytaj kody błędów"),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.red,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: _isLoadingDtc ? null : () => _clearDtc(obd),
-                icon: const Icon(Icons.delete_outline, size: 18),
-                label: const Text("Skasuj"),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.textMuted,
-                  side: const BorderSide(color: AppTheme.border),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-              ),
-            ],
-          ),
-          if (obd.canScanVagModules) ...[
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _moduleScanProgress != null || _isLoadingDtc ? null : () => _scanVagModules(obd),
-                icon: _moduleScanProgress != null
-                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.manage_search, size: 18),
-                label: Text(_moduleScanProgress ?? "Skanuj wszystkie moduły (VAG)"),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.cyan,
-                  side: const BorderSide(color: AppTheme.cyan),
-                ),
-              ),
             ),
-          ],
-          if (obd.status == ObdConnectionStatus.connected) ...[
-            const SizedBox(height: 8),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LearningScreen())),
-                icon: const Icon(Icons.hearing, size: 18),
-                label: const Text("Nauka od testera (podsłuch Autela)"),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.purple,
-                  side: const BorderSide(color: AppTheme.purple),
-                ),
-              ),
-            ),
-          ],
-          if (_moduleScanSummary != null) ...[
-            const SizedBox(height: 8),
-            Text(_moduleScanSummary!, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
-          ],
-          if (_dtcReadFailed) ...[
-            const SizedBox(height: 12),
-            const Text(
-              "Nie udało się odczytać pamięci błędów. Sprawdź połączenie i włącz zapłon.",
-              style: TextStyle(color: AppTheme.red, fontSize: 12),
-            ),
-          ],
-          if (_scannedDtcCodes != null) ...[
-            const SizedBox(height: 12),
-            if (_scannedDtcCodes!.isEmpty)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppTheme.green.withAlpha(20),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: AppTheme.green.withAlpha(80)),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.check_circle, color: AppTheme.green, size: 20),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        "Brak zapisanych i oczekujących kodów usterek w sterownikach.",
-                        style: TextStyle(color: AppTheme.green, fontSize: 13, fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            else
-              ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _scannedDtcCodes!.length,
-                itemBuilder: (context, idx) {
-                  final dtc = _scannedDtcCodes![idx];
-                  final accent = dtc.pending ? AppTheme.orange : AppTheme.red;
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppTheme.surfaceLight,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: accent.withAlpha(120)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                              decoration: BoxDecoration(
-                                color: accent,
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Text(
-                                dtc.code,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  fontFamily: "monospace",
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                dtc.title,
-                                style: const TextStyle(
-                                  color: AppTheme.textPrimary,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        if (dtc.ecuLabel != null || dtc.pending) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            [
-                              if (dtc.ecuLabel != null) "Źródło: ${dtc.ecuLabel}",
-                              if (dtc.pending) "OCZEKUJĄCY (wykryty w tym cyklu jazdy, niepotwierdzony)",
-                            ].join("  •  "),
-                            style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                        const SizedBox(height: 6),
-                        Text(
-                          "Obszar: ${dtc.category}",
-                          style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          dtc.description,
-                          style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          "Prawdopodobne przyczyny usterki:",
-                          style: TextStyle(color: AppTheme.cyan, fontSize: 11, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 2),
-                        ...dtc.commonCauses.map((c) => Padding(
-                              padding: const EdgeInsets.only(bottom: 2),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text("• ", style: TextStyle(color: AppTheme.cyan, fontSize: 12)),
-                                  Expanded(
-                                    child: Text(c, style: const TextStyle(color: AppTheme.textPrimary, fontSize: 11)),
-                                  ),
-                                ],
-                              ),
-                            )),
-                      ],
-                    ),
-                  );
-                },
-              ),
-          ],
         ],
-      ),
-    );
-  }
-
-  Widget _buildVehicleInfoCard(ObdService obd) {
-    final VehicleInfo? v = obd.vehicleInfo;
-    if (v == null) return const SizedBox.shrink();
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.cyan.withAlpha(140), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.cyan.withAlpha(20),
-            blurRadius: 10,
-            spreadRadius: 1,
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: AppTheme.cyan.withAlpha(35),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.directions_car, color: AppTheme.cyan, size: 26),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "${v.manufacturer} ${v.modelName}",
-                      style: const TextStyle(
-                        color: AppTheme.textPrimary,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      "Rocznik modelowy: ${v.year} • ${v.countryOfOrigin}",
-                      style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.sync, color: AppTheme.cyan, size: 22),
-                tooltip: "Odśwież dane pojazdu z ECU (Mode 09)",
-                onPressed: () => obd.readVehicleInfo(),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          const Divider(color: AppTheme.border),
-          const SizedBox(height: 10),
-
-          // Numer VIN
-          _buildInfoRow(
-            icon: Icons.fingerprint,
-            label: "Numer VIN",
-            value: v.vin,
-            valueColor: AppTheme.cyan,
-            isMonospace: true,
-          ),
-          const SizedBox(height: 8),
-
-          // Silnik
-          _buildInfoRow(
-            icon: Icons.engineering,
-            label: "Jednostka napędowa",
-            value: v.engineDescription,
-          ),
-          if (v.fuelType != FuelType.unknown && !v.engineDescription.contains(v.fuelType.label)) ...[
-            const SizedBox(height: 8),
-            _buildInfoRow(icon: Icons.local_gas_station, label: "Paliwo", value: v.fuelType.label),
-          ],
-          const SizedBox(height: 8),
-
-          // Sterownik ECU & CALID
-          _buildInfoRow(
-            icon: Icons.memory,
-            label: "Sterownik silnika",
-            value: "${v.ecuName}\nSoft (CALID): ${v.calibrationId}",
-            valueColor: AppTheme.purple,
-          ),
-          const SizedBox(height: 8),
-
-          // Napięcie i protokół OBD
-          _buildInfoRow(
-            icon: Icons.bolt,
-            label: "Napięcie / Protokół",
-            value: "${v.batteryVoltage.toStringAsFixed(1)} V  •  ${v.obdProtocol}",
-            valueColor: AppTheme.green,
-          ),
-          const SizedBox(height: 8),
-
-          // Dystans od kasowania błędów
-          _buildInfoRow(
-            icon: Icons.history,
-            label: "Dystans od kasowania DTC",
-            value: "${v.distanceSinceDtcClearedKm} km  ${v.distanceWithMilOnKm > 0 ? '(Z błędem: ${v.distanceWithMilOnKm} km)' : '(Brak aktywnego błędu MIL)'}",
-            valueColor: v.distanceSinceDtcClearedKm < 50 ? AppTheme.orange : AppTheme.textSecondary,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInfoRow({
-    required IconData icon,
-    required String label,
-    required String value,
-    Color? valueColor,
-    bool isMonospace = false,
-  }) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 16, color: AppTheme.textMuted),
-        const SizedBox(width: 8),
-        Text(
-          "$label: ",
-          style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: TextStyle(
-              color: valueColor ?? AppTheme.textPrimary,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              fontFamily: isMonospace ? 'monospace' : null,
-              letterSpacing: isMonospace ? 1.0 : 0.0,
-            ),
-          ),
-        ),
       ],
+    );
+  }
+
+  Widget _dtcTile(DtcCode dtc) {
+    final tone = dtc.pending ? AppTheme.warn : AppTheme.fault;
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        expandedCrossAxisAlignment: CrossAxisAlignment.start,
+        title: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 64,
+              child: Text(dtc.code,
+                  style: TextStyle(color: tone, fontFamily: "monospace", fontWeight: FontWeight.w600, fontSize: 13)),
+            ),
+            Expanded(child: Text(dtc.title, style: const TextStyle(fontSize: 13.5))),
+          ],
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(left: 64, top: 2),
+          child: Text(
+            [
+              if (dtc.ecuLabel != null) dtc.ecuLabel!,
+              dtc.pending ? "oczekujący" : "zapisany",
+            ].join(" • "),
+            style: const TextStyle(color: AppTheme.textMuted, fontSize: 11.5),
+          ),
+        ),
+        children: [
+          Text("Obszar: ${dtc.category}", style: const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+          const SizedBox(height: 4),
+          Text(dtc.description, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5)),
+          if (dtc.commonCauses.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Text("Najczęstsze przyczyny", style: AppTheme.label),
+            const SizedBox(height: 4),
+            for (final c in dtc.commonCauses)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Text("• $c", style: const TextStyle(fontSize: 12.5)),
+              ),
+          ],
+        ],
+      ),
     );
   }
 }

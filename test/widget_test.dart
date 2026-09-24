@@ -99,7 +99,7 @@ void main() {
     });
   });
 
-  testWidgets('AutoCheck App launches and renders main tab bar', (WidgetTester tester) async {
+  testWidgets('Dynomic Diag uruchamia się z dolnym menu i marką', (WidgetTester tester) async {
     final obdService = ObdService();
     final dataloggerService = DataloggerService(obdService: obdService, persistHistory: false);
     final definitionsStore = PidDefinitionsStore(obd: obdService, persist: false);
@@ -111,7 +111,7 @@ void main() {
           ChangeNotifierProvider.value(value: dataloggerService),
           ChangeNotifierProvider.value(value: definitionsStore),
         ],
-        child: const AutoCheckApp(),
+        child: const DynomicDiagApp(),
       ),
     );
     // Nie pumpAndSettle — na ekranie połączenia kręci się wskaźnik ładowania
@@ -120,7 +120,14 @@ void main() {
 
     expect(find.byIcon(Icons.speed), findsWidgets);
     expect(find.byIcon(Icons.show_chart), findsWidgets);
-    expect(find.byIcon(Icons.psychology), findsWidgets);
+    expect(find.byIcon(Icons.fact_check_outlined), findsWidgets);
+    expect(find.text("Diagnoza"), findsWidgets);
+    expect(find.text("Parametry"), findsWidgets);
+    expect(find.text("Dynomic", skipOffstage: false), findsOneWidget);
+    // Rejestrator: przycisk „Zacznij pomiar” (dawniej „Uzbrój pomiar”)
+    await tester.tap(find.text("Rejestrator").last);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text("Zacznij pomiar"), findsOneWidget);
   });
 
   test('DPF EGR Delete scenario should detect tampering', () {

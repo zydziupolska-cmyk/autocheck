@@ -45,7 +45,7 @@ class LearningScreen extends StatelessWidget {
 
 BoxDecoration _card() => BoxDecoration(
       color: AppTheme.surface,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(AppTheme.radius),
       border: Border.all(color: AppTheme.border),
     );
 
@@ -57,8 +57,8 @@ class _HowToCard extends StatelessWidget {
     return Container(
       decoration: _card(),
       child: const ExpansionTile(
-        leading: Icon(Icons.school_outlined, color: AppTheme.cyan),
-        title: Text("Jak to działa", style: TextStyle(fontWeight: FontWeight.bold)),
+        leading: Icon(Icons.help_outline, color: AppTheme.textSecondary),
+        title: Text("Jak to działa", style: TextStyle(fontWeight: FontWeight.w600)),
         childrenPadding: EdgeInsets.fromLTRB(16, 0, 16, 16),
         children: [
           Text(
@@ -130,11 +130,11 @@ class _RecordCardState extends State<_RecordCard> {
         children: [
           Row(
             children: [
-              Icon(recording ? Icons.fiber_manual_record : Icons.hearing, color: recording ? AppTheme.red : AppTheme.cyan),
+              Icon(recording ? Icons.fiber_manual_record : Icons.hearing, color: recording ? AppTheme.fault : AppTheme.accent),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(recording ? "Nagrywanie… ${_fmt(sniff.elapsed)}" : "Podsłuch magistrali",
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
               ),
             ],
           ),
@@ -153,7 +153,7 @@ class _RecordCardState extends State<_RecordCard> {
             if (obd.monitorRestarts > 0)
               Text(
                 "Adapter nie nadążał ${obd.monitorRestarts}× (przepełniony bufor) — część ramek mogła przepaść.",
-                style: const TextStyle(color: AppTheme.orange, fontSize: 12),
+                style: const TextStyle(color: AppTheme.warn, fontSize: 12),
               ),
             const SizedBox(height: 4),
             const Text("Odczyty aplikacji (logger, kody) czekają do zatrzymania nagrywania.",
@@ -164,10 +164,6 @@ class _RecordCardState extends State<_RecordCard> {
             onPressed: _busy || (!recording && !canStart) ? null : _toggle,
             icon: Icon(recording ? Icons.stop : Icons.fiber_manual_record),
             label: Text(recording ? "Zatrzymaj i przeanalizuj" : "Nagrywaj"),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: recording ? AppTheme.red : AppTheme.cyan,
-              foregroundColor: recording ? Colors.white : Colors.black,
-            ),
           ),
           if (!recording && !canStart)
             const Padding(
@@ -178,7 +174,7 @@ class _RecordCardState extends State<_RecordCard> {
           if (sniff.error != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text(sniff.error!, style: const TextStyle(color: AppTheme.red, fontSize: 12)),
+              child: Text(sniff.error!, style: const TextStyle(color: AppTheme.fault, fontSize: 12)),
             ),
         ],
       ),
@@ -270,7 +266,7 @@ class _AnalysisHeader extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Co odczytywał tester", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const Text("Co odczytywał tester", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           Text(
             analysis.ecus.isEmpty
@@ -320,8 +316,8 @@ class _EcuTile extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 8),
       decoration: _card(),
       child: ExpansionTile(
-        leading: const Icon(Icons.memory, color: AppTheme.cyan),
-        title: Text(ecu.label, style: const TextStyle(fontWeight: FontWeight.bold)),
+        leading: const Icon(Icons.memory, color: AppTheme.textSecondary),
+        title: Text(ecu.label, style: const TextStyle(fontWeight: FontWeight.w600)),
         subtitle: Text(
           [if (ecu.identification != null) ecu.identification!, "${params.length} parametrów"].join("\n"),
           style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
@@ -334,7 +330,7 @@ class _EcuTile extends StatelessWidget {
               subtitle: Text(
                 "${p.samples.length} odczytów • ${p.length} B • ${p.changes ? 'zmienia się (${p.distinctValues} wartości)' : 'stała'}"
                 "${p.dynamicDefinition != null ? ' • dynamiczny' : ''}",
-                style: TextStyle(color: p.changes ? AppTheme.green : AppTheme.textMuted, fontSize: 11),
+                style: TextStyle(color: p.changes ? AppTheme.ok : AppTheme.textMuted, fontSize: 11),
               ),
               trailing: Text(_preview(p), style: const TextStyle(fontFamily: "monospace", fontSize: 12)),
               onTap: () => Navigator.push(
@@ -479,7 +475,7 @@ class _LearnedParamScreenState extends State<LearnedParamScreen> {
             Text(
               "Uwaga: ten DID tester złożył dynamicznie (UDS 2C) z: ${p.dynamicDefinition}. "
               "Samo zapytanie 22 może nie działać — lepiej zapisz DID źródłowy.",
-              style: const TextStyle(color: AppTheme.orange, fontSize: 12),
+              style: const TextStyle(color: AppTheme.warn, fontSize: 12),
             ),
           ],
           const SizedBox(height: 12),
@@ -505,7 +501,7 @@ class _LearnedParamScreenState extends State<LearnedParamScreen> {
             const Text("To standardowy PID OBD — aplikacja odczytuje go już sama.",
                 style: TextStyle(color: AppTheme.textMuted, fontSize: 12))
           else ...[
-            const Text("Zapisz do Mojej biblioteki", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const Text("Zapisz do Mojej biblioteki", style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 6,
@@ -540,11 +536,10 @@ class _LearnedParamScreenState extends State<LearnedParamScreen> {
               onPressed: !canSave || _saving || _eqError != null ? null : _save,
               icon: const Icon(Icons.library_add),
               label: const Text("Dodaj do biblioteki"),
-              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.cyan, foregroundColor: Colors.black),
             ),
           ],
           const SizedBox(height: 20),
-          const Text("Ostatnie odczyty", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const Text("Ostatnie odczyty", style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
           for (final s in samples.reversed.take(40)) _SampleRow(sample: s),
         ],
@@ -603,7 +598,7 @@ class _Sparkline extends StatelessWidget {
           titlesData: const FlTitlesData(show: false),
           lineTouchData: const LineTouchData(enabled: false),
           lineBarsData: [
-            LineChartBarData(spots: spots, isCurved: false, dotData: const FlDotData(show: false), color: AppTheme.cyan, barWidth: 2),
+            LineChartBarData(spots: spots, isCurved: false, dotData: const FlDotData(show: false), color: AppTheme.accent, barWidth: 2),
           ],
         ),
       ),

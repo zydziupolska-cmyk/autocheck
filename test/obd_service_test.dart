@@ -259,6 +259,23 @@ void main() {
       car.targetKpa = 199; // 1.00 bar nad atmosferą
       expect(await service.readPid(target), closeTo(1.0, 0.02));
     });
+
+    test('PID 4F: rozszerzony zakres MAP (0B przeskalowany) — doładowanie powyżej 1,55 bar', () async {
+      final car = await MockElm327.start(petrol: true);
+      car.mapRangeTens = 30; // zakres 300 kPa
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      expect(await service.connectWifi(ip: "127.0.0.1", port: car.port), isTrue, reason: service.statusMessage);
+      final boost = service.discoveredPids.firstWhere((p) => p.shortName == "BOOST");
+      expect(boost.code, "010B");
+      car.mapKpa = 280;
+      // Baro z emulatora: 99 kPa
+      expect(await service.readPid(boost), closeTo((280 - 99) / 100, 0.03));
+      expect(service.adapterInfo["Źródło BOOST"], contains("PID 4F"));
+    });
   });
 
   test('tryb przyspieszenia: rejestrator sam łapie przyspieszenie, a Asystent wskazuje zapchany DPF', () async {
