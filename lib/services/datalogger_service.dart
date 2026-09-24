@@ -557,18 +557,24 @@ class DataloggerService extends ChangeNotifier {
     }
   }
 
-  /// Eksportuje aktywną sesję do pliku CSV i otwiera systemowe udostępnianie (WhatsApp/E-mail)
-  Future<String?> exportAndShareCsv() async {
-    if (_currentPoints.isEmpty) return null;
+  /// Eksportuje sesję do pliku CSV i otwiera systemowe udostępnianie (WhatsApp/E-mail).
+  /// Bez [session] — sesja aktywna (bieżące nagranie albo log wczytany na wykres).
+  Future<String?> exportAndShareCsv({LogSession? session}) async {
+    final points = session?.points ?? _currentPoints;
+    if (points.isEmpty) return null;
+    final source = session ?? _activeSession;
 
     // Kolumny z sesji (a nie z bieżącego wyboru), żeby pasowały do danych
-    final keys = _activeSession?.activePidKeys.isNotEmpty == true
-        ? _activeSession!.activePidKeys
-        : <String>{for (final p in _currentPoints) ...p.values.keys}.toList();
+    final keys = source?.activePidKeys.isNotEmpty == true
+        ? source!.activePidKeys
+        : <String>{for (final p in points) ...p.values.keys}.toList();
+    final anomalyCount = session == null
+        ? _detectedAnomalies.length
+        : AnomalyEngine.analyzeSession(points, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes).length;
 
     final StringBuffer buffer = StringBuffer();
     buffer.writeln(["Time_ms", "Time_s", ...keys].join(","));
-    for (final p in _currentPoints) {
+    for (final p in points) {
       final row = [
         p.timeMs.toStringAsFixed(0),
         p.timeSec.toStringAsFixed(3),
@@ -580,7 +586,7 @@ class DataloggerService extends ChangeNotifier {
 
     try {
       final dir = await getApplicationDocumentsDirectory();
-      final now = DateTime.now();
+      final now = source?.createdAt ?? DateTime.now();
       final filename = "autocheck_${now.year}${_two(now.month)}${_two(now.day)}_${_two(now.hour)}${_two(now.minute)}${_two(now.second)}.csv";
       final file = File("${dir.path}/$filename");
       await file.writeAsString(buffer.toString());
@@ -588,9 +594,9 @@ class DataloggerService extends ChangeNotifier {
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(file.path)],
-          subject: "Log AutoCheck - ${now.toIso8601String()}",
+          subject: "Log AutoCheck - ${source?.title ?? now.toIso8601String()}",
           text: "Log parametrów silnika zarejestrowany przez AutoCheck. "
-              "${_activeSession?.vehicleLabel ?? ''} Wykrytych anomalii: ${_detectedAnomalies.length}",
+              "${source?.vehicleLabel ?? ''} Wykrytych anomalii: $anomalyCount",
         ),
       );
 

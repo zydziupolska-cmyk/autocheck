@@ -76,6 +76,8 @@ class LogsHistoryScreen extends StatelessWidget {
                       ),
                     ),
                     child: ListTile(
+                      // Dotknięcie wybiera log (eksport, Asystent) bez przechodzenia na wykres
+                      onTap: logger.isRecording ? null : () => logger.selectSession(session),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                       leading: CircleAvatar(
                         backgroundColor: AppTheme.blue.withAlpha(30),
@@ -121,6 +123,11 @@ class LogsHistoryScreen extends StatelessWidget {
                               logger.selectSession(session);
                               onNavigateToTab?.call(3); // Idź do wykresu
                             },
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.share, color: AppTheme.textSecondary),
+                            tooltip: "Eksportuj ten log (CSV)",
+                            onPressed: () => logger.exportAndShareCsv(session: session),
                           ),
                           IconButton(
                             icon: const Icon(Icons.delete_outline, color: AppTheme.textMuted),
@@ -186,6 +193,13 @@ class LogsHistoryScreen extends StatelessWidget {
             "Pliki CSV są w pełni zgodne z programami MegaLogViewer, Virtual Dyno, Excel oraz aplikacjami do chiptuningu.",
             style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
           ),
+          const SizedBox(height: 8),
+          Text(
+            logger.currentPoints.isEmpty
+                ? "Brak wybranego logu — dotknij log na liście poniżej albo użyj ikony udostępniania przy nim."
+                : "Eksportowany: ${logger.isRecording ? 'bieżące nagranie' : logger.activeSession?.title ?? 'bieżące nagranie'}",
+            style: const TextStyle(color: AppTheme.cyan, fontSize: 12, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 12),
           ElevatedButton.icon(
             onPressed: logger.currentPoints.isEmpty
@@ -202,7 +216,7 @@ class LogsHistoryScreen extends StatelessWidget {
                     }
                   },
             icon: const Icon(Icons.share),
-            label: const Text("Udostępnij aktualny log (WhatsApp / E-mail / Dysk)"),
+            label: const Text("Udostępnij wybrany log (WhatsApp / E-mail / Dysk)"),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppTheme.cyan,
               foregroundColor: Colors.black,
