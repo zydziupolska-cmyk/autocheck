@@ -316,4 +316,58 @@ void main() {
     expect(dpf, hasLength(1), reason: logger.detectedAnomalies.map((a) => "${a.id}: ${a.title}").join("\n"));
     expect(dpf.single.plainSummary, contains("DPF"));
   });
+
+  group('kilka PIDów w jednym zapytaniu', () {
+    test('odczyt 6 kanałów = 1 zapytanie zamiast 6, wartości identyczne', () async {
+      await connect();
+      expect(obd.multiPidEnabled, isTrue);
+      final keys = ["RPM", "SPEED", "LOAD", "MAF", "IAT", "ECT"];
+      final pids = [for (final k in keys) obd.discoveredPids.firstWhere((p) => p.shortName == k)];
+      final before = elm.receivedCommands.length;
+      final values = await obd.readPids(pids);
+      final sent = elm.receivedCommands.sublist(before).where((c) => c.startsWith("01")).toList();
+      expect(sent, hasLength(1), reason: sent.join(", "));
+      expect(values["RPM"], closeTo(850, 0.01));
+      expect(values["SPEED"], 0);
+      expect(values["ECT"], 90);
+      expect(values["IAT"], 20);
+      expect(values["MAF"], closeTo(5.0, 0.01));
+    });
+
+    test('PIDy wieloramkowe (70, 6D) też w pakiecie', () async {
+      await connect();
+      elm
+        ..targetKpa = 239
+        ..mapKpa = 159;
+      final pids = obd.discoveredPids.where((p) => ["RPM", "BOOST", "TARGET_BOOST", "F_RAIL", "RAIL_TGT", "PEDAL"].contains(p.shortName)).toList();
+      final before = elm.receivedCommands.length;
+      final values = await obd.readPids(pids);
+      expect(elm.receivedCommands.sublist(before).where((c) => c.startsWith("01")), hasLength(1));
+      expect(values["TARGET_BOOST"], closeTo(1.40, 0.01));
+      expect(values["BOOST"], closeTo(0.60, 0.01));
+      expect(values["RAIL_TGT"], closeTo(300, 0.1));
+      expect(values["F_RAIL"], closeTo(298, 0.1));
+    });
+
+    test('sterownik bez obsługi — pojedyncze zapytania jak dotąd', () async {
+      elm.multiPidSupported = false;
+      await connect();
+      expect(obd.multiPidEnabled, isFalse);
+      final pids = [for (final k in ["RPM", "SPEED"]) obd.discoveredPids.firstWhere((p) => p.shortName == k)];
+      final values = await obd.readPids(pids);
+      expect(values["RPM"], closeTo(850, 0.01));
+      expect(values["SPEED"], 0);
+    });
+
+    test('KWP (bez CAN) — pojedyncze zapytania', () async {
+      final car = await MockElm327.start(bus: MockBus.kwp);
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      expect(await service.connectWifi(ip: "127.0.0.1", port: car.port), isTrue);
+      expect(service.multiPidEnabled, isFalse);
+    });
+  });
 }

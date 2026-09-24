@@ -82,10 +82,35 @@ są sprawdzane pod kątem pozytywnej odpowiedzi (`62`) i wiarygodności wartośc
 ciśnienia doładowania z UDS (kPa / hPa / bar) jest wykrywana automatycznie po wartości
 atmosferycznej. Tabele producentów są generowane z plików CSV (`scripts/generate_pids.py`).
 
+### Dowolne auto: import definicji w formacie Torque (CSV)
+
+Standardowe parametry OBD-II działają w każdym aucie. Parametrów producenta (korekty
+wtryskiwaczy, zadane doładowanie w benzynie, parametry BMS aut elektrycznych…) nie da się
+obsłużyć uniwersalnie — każdy producent i sterownik ma inne identyfikatory. Dlatego aplikacja
+importuje pliki w formacie Torque Pro (`Name, ShortName, ModeAndPID, Equation, Min, Max,
+Units, Header`), dla którego społeczność ma gotowe definicje dla setek modeli
+(Czujniki → „Importuj plik CSV”).
+
+- Interpreter równań Torque (`lib/services/torque_equation.dart`): zmienne `A`…`Z`, `AA`…,
+  `SIGNED()`, `INT16/24/32()`, `BIT()`, `{A:n}`, `<`/`>` (przesunięcia), `& |`, `ABS`,
+  `MAX`, `MIN`, `AVG`; tolerancja typowych literówek (nadmiarowe nawiasy). Pola `val{…}`
+  (wyliczane z innych parametrów) są pomijane.
+- Parametry rozpoznawane po nazwie (angielskiej, polskiej, niemieckiej) trafiają do kanałów
+  analizatora z przeliczeniem jednostek: doładowanie zadane/rzeczywiste, szyna paliwa,
+  korekty wtryskiwaczy `INJ_CORR_n`, stuk `KNOCK_n`, DPF, EGT, VGT, EGR, lambda. Pozostałe
+  są logowane pod własną nazwą (`U_…`).
+- Przy każdym połączeniu definicje są sprawdzane — do logowania trafiają tylko te, na które
+  auto odpowiada wiarygodną wartością. Standard OBD-II ma pierwszeństwo.
+
+Korekty wtryskiwaczy są dla Asystenta najmocniejszym wskazaniem cylindra (przed licznikami
+wypadania zapłonów i kodami P030x).
+
 ### Harmonogram odpytywania
 
 Kanały z tego samego zapytania (np. zadane i rzeczywiste doładowanie z PID 70) kosztują jedno
-zapytanie. Szybkie kanały (obroty, pedał, doładowanie, MAF, szyna) są odczytywane w każdym
+zapytanie. Na CAN standardowe PID-y są pakowane po 6 w jedno zapytanie (SAE J1979), jeśli
+sterownik to obsługuje — sprawdzane przy połączeniu, z automatycznym powrotem do pojedynczych
+zapytań. Szybkie kanały (obroty, pedał, doładowanie, MAF, szyna) są odczytywane w każdym
 cyklu, normalne co 2 cykle, wolne (temperatury, liczniki wypadania zapłonów) co 8 cykli, a
 podczas przyspieszenia wolne kanały czekają. Jeśli adapter to obsługuje, zapytania mają
 dopisaną liczbę odpowiedzi (`010C1`), więc adapter nie czeka na timeout magistrali.

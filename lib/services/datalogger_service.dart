@@ -127,10 +127,23 @@ class DataloggerService extends ChangeNotifier {
 
   /// Po połączeniu z prawdziwym autem wybierz automatycznie wszystko, czego
   /// potrzebuje Asystent (i co ECU faktycznie obsługuje).
+  int _lastDiscoveredCount = 0;
+
   void _onObdChanged() {
     final status = obdService.status;
+    // Nowe parametry po imporcie definicji w trakcie połączenia — dołącz te, których
+    // potrzebuje Asystent (np. korekty wtryskiwaczy)
+    if (status == _lastObdStatus && status == ObdConnectionStatus.connected &&
+        obdService.discoveredPids.length != _lastDiscoveredCount) {
+      _lastDiscoveredCount = obdService.discoveredPids.length;
+      final auto = LoggingPreset.presets.first.pidShortNames.toSet();
+      _selectedPidKeys.addAll(obdService.discoveredPids.map((p) => p.shortName).where(auto.contains));
+      notifyListeners();
+      return;
+    }
     if (status == _lastObdStatus) return;
     _lastObdStatus = status;
+    _lastDiscoveredCount = obdService.discoveredPids.length;
 
     if (status == ObdConnectionStatus.connected) {
       final available = obdService.discoveredPids.map((p) => p.shortName).toSet();

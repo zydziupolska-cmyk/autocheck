@@ -9,6 +9,7 @@ import 'package:autocheck/services/anomaly_engine.dart';
 import 'package:autocheck/services/obd_service.dart';
 import 'package:autocheck/services/datalogger_service.dart';
 import 'package:autocheck/main.dart';
+import 'package:autocheck/services/pid_definitions_store.dart';
 
 import 'package:autocheck/models/extended_pid.dart';
 
@@ -101,12 +102,14 @@ void main() {
   testWidgets('AutoCheck App launches and renders main tab bar', (WidgetTester tester) async {
     final obdService = ObdService();
     final dataloggerService = DataloggerService(obdService: obdService, persistHistory: false);
+    final definitionsStore = PidDefinitionsStore(obd: obdService, persist: false);
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           ChangeNotifierProvider.value(value: obdService),
           ChangeNotifierProvider.value(value: dataloggerService),
+          ChangeNotifierProvider.value(value: definitionsStore),
         ],
         child: const AutoCheckApp(),
       ),

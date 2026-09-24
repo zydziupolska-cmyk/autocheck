@@ -475,6 +475,7 @@ class LoggingPreset {
         "VGT_CMD", "VGT_ACT", "WG_CMD", "WG_ACT", "EGR_CMD", "EGR_ACT", "DPF_DP", "EXH_P", "EGT",
         "IAT", "CAC_T", "ECT", "BARO", "TQ_DEMAND", "TQ_ACT", "IGN", "STFT", "LTFT", "LAMBDA",
         "LAMBDA_CMD", "KNOCK_1", "KNOCK_2", "KNOCK_3", "KNOCK_4", "MIS_1", "MIS_2", "MIS_3", "MIS_4",
+        "INJ_CORR_1", "INJ_CORR_2", "INJ_CORR_3", "INJ_CORR_4", "INJ_CORR_5", "INJ_CORR_6", "DPF_SOOT", "OIL_T",
       ],
     ),
     const LoggingPreset(

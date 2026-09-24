@@ -57,6 +57,8 @@ class ObdService extends ChangeNotifier {
   String? _engineHeader; // adres zapytań fizycznych do ECU silnika, np. "7E0"
   String? _activeHeader; // ostatnio ustawiony ATSH
   bool _responseCountSupported = false;
+  bool _multiPidSupported = false;
+  int _multiPidFailures = 0;
   Set<int> _supportedPids = {};
   Set<int> _supportedMode06 = {};
   double? _baroKpa;
@@ -311,6 +313,8 @@ class ObdService extends ChangeNotifier {
       _engineHeader = null;
       _activeHeader = null;
       _responseCountSupported = false;
+      _multiPidSupported = false;
+      _multiPidFailures = 0;
       _supportedPids = {};
       _supportedMode06 = {};
       _udsPressureScale.clear();
@@ -559,6 +563,15 @@ class ObdService extends ChangeNotifier {
       _responseCountSupported = ElmParser.parse(raw, _bus).any((r) => r.matches(0x41, [0x00]));
     }
 
+    // Kilka PIDów w jednym zapytaniu (SAE J1979 na CAN pozwala do 6) — kilkukrotnie
+    // szybsze logowanie. Sprawdzamy na obrotach i prędkości (obsługuje je prawie każde auto).
+    if (_isCan && _supportedPids.contains(0x0C) && _supportedPids.contains(0x0D)) {
+      final r = await _query("010C0D");
+      final data = r.where((e) => e.data.isNotEmpty && e.data[0] == 0x41).firstOrNull;
+      final split = data != null ? ElmParser.splitMultiPid(data.data) : null;
+      _multiPidSupported = split != null && split.containsKey(0x0C) && split.containsKey(0x0D);
+    }
+
     // Ciśnienie atmosferyczne — do przeliczenia MAP na doładowanie względne
     if (_supportedPids.contains(0x33)) {
       final baro = await _readMode01Raw(0x33);
@@ -574,6 +587,11 @@ class ObdService extends ChangeNotifier {
     if (_vehicleInfo != null && _vehicleInfo!.profile != VehicleProfile.generic) {
       _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie parametrów producenta (UDS)...");
       await _probeExtendedPids(_vehicleInfo!.profile);
+    }
+
+    if (importedPids.isNotEmpty) {
+      _updateStatus(ObdConnectionStatus.initializing, "Sprawdzanie zaimportowanych definicji (${importedPids.length})...");
+      await _probeImported();
     }
 
     if (!_hasTransport) return false;
@@ -636,13 +654,61 @@ class ObdService extends ChangeNotifier {
       if (ep.kind == UdsValueKind.boostPressure) {
         final scale = _detectPressureScale(raw);
         if (scale == null) continue;
-        _udsPressureScale[ep.requestCommand] = scale;
+        _udsPressureScale["${ep.requestCommand}|${ep.shortName}"] = scale;
       }
       final value = _transform(ep, raw);
       if (value == null || !_isPlausible(ep.shortName, value)) continue;
 
       _discoveredPids.add(ep);
       seen.add(ep.shortName);
+    }
+  }
+
+  /// Definicje zaimportowane przez użytkownika (pliki CSV Torque) — sprawdzane przy
+  /// każdym połączeniu; do logowania trafiają tylko te, na które auto odpowiada.
+  List<ExtendedPid> importedPids = [];
+
+  /// Sprawdza zaimportowane definicje w trakcie połączenia (np. zaraz po imporcie).
+  /// Zwraca liczbę parametrów, które auto obsługuje.
+  Future<int> probeImportedNow() async {
+    if (_status != ObdConnectionStatus.connected) return 0;
+    final before = _discoveredPids.length;
+    await _probeImported();
+    notifyListeners();
+    return _discoveredPids.length - before;
+  }
+
+  Future<void> _probeImported() async {
+    _discoveredPids.removeWhere((p) => p is ExtendedPid && p.profile == VehicleProfile.custom);
+    final seen = _discoveredPids.map((p) => p.shortName).toSet();
+    final groups = <String, List<ExtendedPid>>{};
+    for (final p in importedPids) {
+      groups.putIfAbsent("${p.canHeader ?? ''}|${p.requestCommand}", () => []).add(p);
+    }
+    for (final group in groups.values.take(200)) {
+      if (!_hasTransport) return;
+      final candidates = group.where((p) => !seen.contains(p.shortName)).toList();
+      if (candidates.isEmpty) continue;
+      final payload = await _readPayload(candidates.first);
+      if (payload == null) continue;
+      for (final p in candidates) {
+        final raw = p.decoder(payload);
+        if (!raw.isFinite) continue;
+        if (p.kind == UdsValueKind.boostPressure) {
+          final scale = _detectPressureScale(raw);
+          if (scale == null) continue;
+          _udsPressureScale["${p.requestCommand}|${p.shortName}"] = scale;
+        }
+        final v = _transform(p, raw);
+        if (v == null) continue;
+        final range = (p.maxExpected - p.minExpected).abs();
+        final plausible = p.shortName.startsWith("U_")
+            ? v >= p.minExpected - range - 1 && v <= p.maxExpected + range + 1
+            : _isPlausible(p.shortName, v);
+        if (!plausible) continue;
+        _discoveredPids.add(p);
+        seen.add(p.shortName);
+      }
     }
   }
 
@@ -685,7 +751,7 @@ class ObdService extends ChangeNotifier {
     if (pid is ExtendedPid) {
       switch (pid.kind) {
         case UdsValueKind.boostPressure:
-          final scale = _udsPressureScale[pid.requestCommand];
+          final scale = _udsPressureScale["${pid.requestCommand}|${pid.shortName}"];
           if (scale == null) return null;
           if (scale == 0) return raw;
           return (raw * scale - (_baroKpa ?? 101.3)) / 100.0;
@@ -695,6 +761,8 @@ class ObdService extends ChangeNotifier {
           if (unit == "mbar" || unit == "hpa") return raw / 1000.0;
           if (unit == "mpa") return raw * 10.0;
           return raw;
+        case UdsValueKind.scaled:
+          return raw * pid.scale + pid.offset;
         case UdsValueKind.raw:
           return raw;
       }
@@ -734,7 +802,9 @@ class ObdService extends ChangeNotifier {
     try {
       // Odpowiedzi Mode 06 i PIDy wielowartościowe bywają wieloramkowe —
       // wtedy bez skróconego oczekiwania na liczbę odpowiedzi.
-      final single = service != 0x06 && !pid.hasSupportByte;
+      // Liczba oczekiwanych odpowiedzi tylko dla krótkich odpowiedzi Mode 01 — odpowiedzi
+      // producenta (21xx/22xxxx) bywają wieloramkowe
+      final single = service == 0x01 && !pid.hasSupportByte;
       final responses = await _query(cmd, header: header, singleFrame: single);
       final match = responses.where((r) => r.matches(service + 0x40, id)).firstOrNull;
       if (match == null) return null;
@@ -766,6 +836,37 @@ class ObdService extends ChangeNotifier {
       final key = "${p is ExtendedPid ? p.canHeader ?? '' : ''}|${p.command.toUpperCase()}";
       groups.putIfAbsent(key, () => []).add(p);
     }
+
+    // Standardowe PIDy Mode 01 o znanej długości — pakujemy po 6 w jedno zapytanie
+    if (_multiPidSupported) {
+      final batchable = <int, List<ObdPid>>{};
+      groups.removeWhere((key, group) {
+        final pid = group.first;
+        final n = pid.mode01Pid;
+        if (pid is ExtendedPid || n == null || !ElmParser.mode01DataLength.containsKey(n)) return false;
+        batchable[n] = group;
+        return true;
+      });
+      final numbers = batchable.keys.toList();
+      for (int i = 0; i < numbers.length; i += 6) {
+        if (_status != ObdConnectionStatus.connected) break;
+        final batch = numbers.sublist(i, i + 6 > numbers.length ? numbers.length : i + 6);
+        final split = await _readMultiPid(batch);
+        for (final n in batch) {
+          final payload = split?[n];
+          if (payload == null) {
+            // Sterownik pominął PID albo zapytanie się nie udało — spróbuj pojedynczo
+            if (split == null) groups["|01${n.toRadixString(16).padLeft(2, '0').toUpperCase()}"] = batchable[n]!;
+            continue;
+          }
+          for (final p in batchable[n]!) {
+            final v = _transform(p, p.decoder(payload));
+            if (v != null) result[p.shortName] = v;
+          }
+        }
+      }
+    }
+
     for (final group in groups.values) {
       if (_status != ObdConnectionStatus.connected) break;
       final payload = await _readPayload(group.first);
@@ -780,6 +881,22 @@ class ObdService extends ChangeNotifier {
     if (baro != null && baro > 50 && baro < 120) _baroKpa = baro;
     return result;
   }
+
+  Future<Map<int, List<int>>?> _readMultiPid(List<int> pids) async {
+    final cmd = "01${pids.map((n) => n.toRadixString(16).padLeft(2, '0').toUpperCase()).join()}";
+    final responses = await _query(cmd);
+    final data = responses.where((e) => e.data.isNotEmpty && e.data[0] == 0x41).firstOrNull;
+    final split = data != null ? ElmParser.splitMultiPid(data.data) : null;
+    if (split == null || split.isEmpty) {
+      // Po kilku nieudanych próbach wracamy na stałe do pojedynczych zapytań
+      if (++_multiPidFailures >= 3) _multiPidSupported = false;
+      return null;
+    }
+    _multiPidFailures = 0;
+    return split;
+  }
+
+  bool get multiPidEnabled => _multiPidSupported;
 
   // ===========================================================================
   // Kody błędów (Mode 03 / 07 / 04)

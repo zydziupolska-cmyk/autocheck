@@ -169,6 +169,10 @@ class DriveAnalyzer {
     if (dpf != null) anomalies.add(dpf);
     final torque = _diagnoseTorqueLimit(pullPts, boostAnomalyPresent: boost != null);
     if (torque != null) anomalies.add(torque);
+    if (rail == null || !rail.id.startsWith("rail_low_idle_")) {
+      final inj = _injectorOutlierAnomaly(pts);
+      if (inj != null) anomalies.add(inj);
+    }
     anomalies.addAll(_unconfirmedDtcs(pts, dtcs, anomalies));
     return anomalies;
   }
@@ -663,9 +667,33 @@ class DriveAnalyzer {
   // Ciśnienie paliwa — wzorzec: jałowy vs obciążenie, korekty paliwa, cylinder
   // ---------------------------------------------------------------------------
 
-  /// Który cylinder wypada z zapłonu — tylko z danych: przyrost liczników Mode 06
-  /// (lub wyraźnie najwyższy licznik) albo kod P030x. Zwraca (cylinder, źródło).
+  /// Cylinder, którego korekta wtryskiwacza (parametr producenta, np. z importu CSV)
+  /// wyraźnie odstaje od pozostałych. Zwraca (cylinder, opis, odchyłka).
+  static (int, String, double)? _injectorOutlier(List<LogPoint> pts) {
+    final idle = pts.where((p) => DriveState.isIdle(p.values, isDiesel: false) || DriveState.isIdle(p.values, isDiesel: true)).toList();
+    final source = idle.length >= 10 ? idle : pts.where((p) => (p.values["RPM"] ?? 0) >= 500).toList();
+    final means = <int, double>{};
+    for (int cyl = 1; cyl <= 8; cyl++) {
+      final m = _mean(source, "INJ_CORR_$cyl");
+      if (m != null) means[cyl] = m;
+    }
+    if (means.length < 3) return null;
+    final sortedVals = means.values.toList()..sort();
+    final median = sortedVals[sortedVals.length ~/ 2];
+    final devs = means.map((c, v) => MapEntry(c, v - median)).entries.toList()
+      ..sort((a, b) => b.value.abs().compareTo(a.value.abs()));
+    final worst = devs.first;
+    final second = devs[1].value.abs();
+    if (worst.value.abs() < 0.5 || worst.value.abs() < 2.5 * max(second, 1e-3)) return null;
+    final others = means.entries.where((e) => e.key != worst.key).map((e) => "cyl. ${e.key}: ${_f(e.value, 1)}").join(", ");
+    return (worst.key, "korekta wtryskiwacza cylindra ${worst.key}: ${_f(means[worst.key]!, 1)} (pozostałe: $others)", worst.value);
+  }
+
+  /// Podejrzany cylinder — tylko z danych: korekta wtryskiwacza odstająca od pozostałych,
+  /// przyrost licznika wypadania zapłonów Mode 06 (lub wyraźnie najwyższy licznik) albo kod P030x.
   static (int, String)? _misfireCylinder(List<LogPoint> pts, Set<String> dtcs) {
+    final inj = _injectorOutlier(pts);
+    if (inj != null) return (inj.$1, inj.$2);
     final score = <int, double>{};
     for (int cyl = 1; cyl <= 8; cyl++) {
       final v = [for (final p in pts) if (p.values.containsKey("MIS_$cyl")) p.values["MIS_$cyl"]!];
@@ -687,6 +715,29 @@ class DriveAnalyzer {
       return (cyl, "kod błędu ${cylCodes.single} (wypadanie zapłonu cylindra $cyl)");
     }
     return null;
+  }
+
+  static Anomaly? _injectorOutlierAnomaly(List<LogPoint> pts) {
+    final o = _injectorOutlier(pts);
+    if (o == null) return null;
+    final (cyl, text, _) = o;
+    return Anomaly(
+      id: "inj_outlier_cyl${cyl}_${pts.first.timeMs.toInt()}",
+      title: "Wtryskiwacz cylindra $cyl odstaje od pozostałych",
+      severity: AnomalySeverity.warning,
+      paramKey: "INJ_CORR_$cyl",
+      startMs: pts.first.timeMs,
+      endMs: pts.last.timeMs,
+      startRpm: 0,
+      endRpm: 0,
+      observedValueText: text,
+      primarySymptom: "Sterownik musi korygować dawkę cylindra $cyl wyraźnie inaczej niż pozostałych.",
+      correlatedSignals: {"Korekty": text},
+      plainSummary: "Wtryskiwacz cylindra $cyl pracuje inaczej niż pozostałe — może być zużyty, zanieczyszczony albo nieszczelny. Na razie bez innych objawów; jeśli pojawi się nierówna praca lub kod błędu, zacznij od tego wtryskiwacza.",
+      description: "Porównanie korekt wtryskiwaczy poszczególnych cylindrów (parametr producenta).",
+      hypotheses: ["Zużyty lub zanieczyszczony wtryskiwacz cylindra $cyl", "Nieszczelny wtryskiwacz cylindra $cyl", "Różnica kompresji w cylindrze $cyl"],
+      recommendations: ["Sprawdź świecę cylindra $cyl.", "Wykonaj test wtryskiwaczy (przelewy / wydatek) lub zamień wtryskiwacze miejscami i obserwuj korekty."],
+    );
   }
 
   static Anomaly? _diagnoseFuelPressure(List<LogPoint> pts, {required bool isDiesel, Set<String> dtcs = const {}}) {
@@ -786,7 +837,11 @@ class DriveAnalyzer {
           regulator.add(1, "Za uboga mieszanka przy niskim ciśnieniu pasuje do problemu z podawaniem paliwa");
           pump.add(1, "Za uboga mieszanka przy niskim ciśnieniu pasuje do słabego podawania paliwa");
         }
-        if (cylinder != null) injector.add(2, "Wypada zapłon jednego cylindra (${cylinder.$2}) — zalewany cylinder nie odpala");
+        if (cylinder != null) {
+          injector.add(2, cylinder.$2.startsWith("korekta")
+              ? "Jeden wtryskiwacz wyraźnie odstaje od pozostałych (${cylinder.$2})"
+              : "Wypada zapłon jednego cylindra (${cylinder.$2}) — zalewany cylinder nie odpala");
+        }
         if (dtcs.contains("P0172") || dtcs.contains("P0175")) injector.add(1, "Sterownik zapisał kod „mieszanka za bogata”");
         if (dtcs.contains("P0171") || dtcs.contains("P0174")) regulator.add(1, "Sterownik zapisał kod „mieszanka za uboga”");
         if (rpmStd >= 25) injector.add(0.5, "Nierówny bieg jałowy");
@@ -830,7 +885,11 @@ class DriveAnalyzer {
 
     final extra = <String>[];
     if (!isDiesel && hasTrim && trim <= -8) extra.add("Sterownik ujmuje paliwa (korekty ${_f(trim, 1)}%), bo mieszanka jest za bogata.");
-    if (cylinder != null) extra.add("Wypada zapłon cylindra ${cylinder.$1}.");
+    if (cylinder != null) {
+      extra.add(cylinder.$2.startsWith("korekta")
+          ? "Korekta wtryskiwacza cylindra ${cylinder.$1} wyraźnie odstaje od pozostałych."
+          : "Wypada zapłon cylindra ${cylinder.$1}.");
+    }
     final String plain;
     if (top.id == "injector" && confident) {
       plain = "$symptom ${extra.join(' ')} To typowy obraz lejącego wtryskiwacza${cylTxt.isEmpty ? '' : cylTxt}: paliwo przecieka z szyny prosto do cylindra. "

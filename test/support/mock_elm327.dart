@@ -48,6 +48,12 @@ class MockElm327 {
   /// Symuluje wyłączony zapłon: adapter odpowiada, ale żaden sterownik nie.
   bool ignitionOff = false;
 
+  /// Dodatkowe identyfikatory UDS (usługa 22) sterownika silnika: "1234" → bajty danych.
+  final Map<String, List<int>> udsDids = {};
+
+  /// Czy sterownik obsługuje zapytania o kilka PIDów naraz (większość aut na CAN tak).
+  bool multiPidSupported = true;
+
   /// Obroty zwracane przez ECU silnika.
   double rpm = 850;
 
@@ -288,6 +294,16 @@ class MockElm327 {
 
   List<int>? _engine(List<int> req) {
     if (req.isEmpty) return null;
+    // Zapytanie o kilka PIDów naraz: 01 0C 0D 0B ... → 41 0C dane 0D dane 0B dane ...
+    if (req[0] == 0x01 && req.length > 2 && bus != MockBus.kwp) {
+      if (!multiPidSupported) return null;
+      final out = <int>[0x41];
+      for (final pid in req.sublist(1)) {
+        final single = _engine([0x01, pid]);
+        if (single != null) out.addAll(single.sublist(1));
+      }
+      return out.length > 1 ? out : null;
+    }
     switch (req[0]) {
       case 0x06:
         if (!petrol || bus == MockBus.kwp || req.length < 2) return null;
@@ -377,6 +393,11 @@ class MockElm327 {
         }
         return null;
       case 0x22:
+        if (req.length >= 3) {
+          final did = "${_hex(req[1])}${_hex(req[2])}";
+          final data = udsDids[did];
+          if (data != null) return [0x62, req[1], req[2], ...data];
+        }
         // UDS VAG (tylko wersja benzynowa): doładowanie rzeczywiste 202A i zadane 2029 w hPa
         if (petrol && req.length >= 3 && req[1] == 0x20 && (req[2] == 0x2A || req[2] == 0x29)) {
           final hPa = (req[2] == 0x2A ? mapKpa : targetKpa) * 10;
