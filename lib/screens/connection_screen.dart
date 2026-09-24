@@ -148,20 +148,33 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       _moduleScanProgress = "Przygotowanie skanu...";
       _moduleScanSummary = null;
     });
-    final results = await obd.scanVagModules(onProgress: (done, total, m) {
-      if (mounted) setState(() => _moduleScanProgress = "Moduł ${done + 1 > total ? total : done + 1}/$total: ${m.name}");
+    // Nowsze moduły (UDS, MQB i nowsze), potem starsze (TP2.0 / KWP2000, platformy PQ)
+    final uds = await obd.scanVagModules(onProgress: (done, total, m) {
+      if (mounted) setState(() => _moduleScanProgress = "UDS ${done + 1 > total ? total : done + 1}/$total: ${m.name}");
+    });
+    final tp20 = await obd.scanVagTp20Modules(onProgress: (done, total, name) {
+      if (mounted) setState(() => _moduleScanProgress = "TP2.0 ${done + 1 > total ? total : done + 1}/$total: $name");
     });
     if (!mounted) return;
-    final responded = results.where((r) => r.responded).toList();
+    final responded = [...uds, ...tp20].where((r) => r.responded).toList();
     final withFaults = responded.where((r) => r.dtcs.isNotEmpty).toList();
+    // Ten sam kod z tego samego modułu (np. silnik odpowiada i przez UDS, i przez TP2.0) — raz
+    final seen = <String>{};
+    final codes = <DtcCode>[
+      for (final r in responded)
+        for (final d in r.dtcs)
+          if (seen.add("${r.module.name}|${d.code}")) d,
+    ];
+    String label(ModuleScanResult r) =>
+        "${r.module.name}${r.identification != null ? ' (${r.identification})' : ''}";
     setState(() {
       _moduleScanProgress = null;
       _dtcReadFailed = false;
-      _scannedDtcCodes = [for (final r in responded) ...r.dtcs];
+      _scannedDtcCodes = codes;
       _moduleScanSummary = responded.isEmpty
-          ? "Żaden moduł nie odpowiedział przez UDS — to auto prawdopodobnie używa starszego protokołu (TP2.0) dla modułów. Kody silnika odczytasz przyciskiem obok."
-          : "Odpowiedziało ${responded.length} z ${results.length} modułów: ${responded.map((r) => r.module.name).join(', ')}. "
-              "${withFaults.isEmpty ? 'Żaden nie ma zapisanych błędów.' : 'Błędy w: ${withFaults.map((r) => r.module.name).join(', ')}.'}";
+          ? "Żaden moduł nie odpowiedział ani przez UDS, ani przez TP2.0. Kody silnika odczytasz przyciskiem „Odczytaj kody błędów”."
+          : "Odpowiedziało ${responded.length} modułów: ${responded.map(label).join(', ')}. "
+              "${withFaults.isEmpty ? 'Żaden nie ma zapisanych błędów.' : 'Błędy w: ${withFaults.map((r) => r.module.name).toSet().join(', ')}.'}";
     });
   }
 

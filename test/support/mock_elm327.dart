@@ -59,6 +59,23 @@ class MockElm327 {
   /// po 4 bajty: 3 bajty kodu + status).
   final Map<String, (String, List<List<int>>)> vagModules = {};
 
+  bool debugLog = false;
+
+  /// Moduły VAG na TP2.0 (starsze platformy): adres → lista (kod VAG, status).
+  final Map<int, List<(int, int)>> tp20Modules = {};
+
+  /// Moduły TP2.0, które na odczyt kodów najpierw odpowiadają „czekaj” (7F 18 78).
+  final Set<int> tp20SlowModules = {};
+
+  // --- Stan TP2.0 (surowy CAN, protokół użytkownika B) ---
+  bool _rawMode = false;
+  int? _tpDest;
+  int _tpEcuSeq = 0;
+  final List<int> _tpIncoming = [];
+  final List<List<int>> _tpOutQueue = [];
+  bool _tpPending = false;
+  List<int>? _tpPendingResponse;
+
   /// Dodatkowe identyfikatory UDS (usługa 22) sterownika silnika: "1234" → bajty danych.
   final Map<String, List<int>> udsDids = {};
 
@@ -126,12 +143,14 @@ class MockElm327 {
   String _respond(String rawCmd) {
     final cmd = rawCmd.replaceAll(" ", "").toUpperCase();
     receivedCommands.add(cmd);
+    if (debugLog) print(">> $cmd  (header $_header, raw $_rawMode)");
     final echo = _echo ? "$rawCmd\r" : "";
     return "$echo${_body(cmd)}\r\r>";
   }
 
   String _body(String cmd) {
     if (cmd.startsWith("AT")) return _atCommand(cmd.substring(2));
+    if (_rawMode) return _tp20Frame(cmd);
     if (cmd.startsWith("ST")) {
       if (!stn) return "?";
       if (cmd == "STI") return "STN2255 v5.10.3";
@@ -205,6 +224,8 @@ class MockElm327 {
     }
     if (at == "RV") return "14.5V";
     if (at.startsWith("SH")) _header = at.substring(2);
+    if (at == "SPB") _rawMode = true;
+    if (at.startsWith("SP") && at != "SPB") _rawMode = false;
     if (at.startsWith("SP") && resetsFormattingOnProtocol) {
       _headers = false;
       _spaces = false;
@@ -473,5 +494,113 @@ class MockElm327 {
         return null;
     }
     return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Emulacja TP2.0 (moduł odbiera na 0x740, wysyła na 0x300)
+  // ---------------------------------------------------------------------------
+
+  String _tpLine(int id, List<int> data) {
+    final parts = [id.toRadixString(16).padLeft(3, '0').toUpperCase(), ...data.map(_hex)];
+    return _headers ? (_spaces ? parts.join(" ") : parts.join()) : data.map(_hex).join(_spaces ? " " : "");
+  }
+
+  String _tp20Frame(String hex) {
+    if (!RegExp(r'^[0-9A-F]+$').hasMatch(hex) || hex.length.isOdd) return "?";
+    final d = [for (int i = 0; i < hex.length; i += 2) int.parse(hex.substring(i, i + 2), radix: 16)];
+
+    if (_header == "200") {
+      if (d.length == 7 && d[1] == 0xC0 && tp20Modules.containsKey(d[0])) {
+        _tpDest = d[0];
+        _tpEcuSeq = 0;
+        _tpIncoming.clear();
+        _tpOutQueue.clear();
+        return _tpLine(0x200 + d[0], [0x00, 0xD0, 0x00, 0x03, 0x40, 0x07, 0x01]);
+      }
+      return "NO DATA";
+    }
+    if (_header != "740" || _tpDest == null) return "NO DATA";
+
+    final op = d[0] >> 4;
+    if (d[0] == 0xA0 || d[0] == 0xA3) {
+      final lines = [_tpLine(0x300, [0xA1, 0x0F, 0x8A, 0xFF, 0x4A, 0xFF])];
+      // Moduł, który wcześniej odpowiedział „czekaj”, teraz wysyła właściwą odpowiedź
+      if (d[0] == 0xA3 && _tpPending && _tpPendingResponse != null) {
+        _tpPending = false;
+        _queueResponse(_tpPendingResponse!);
+        lines.addAll(_flushQueue());
+      }
+      return lines.join("\r");
+    }
+    if (d[0] == 0xA8) {
+      _tpDest = null;
+      return _tpLine(0x300, [0xA8]);
+    }
+    if (op == 0xB) {
+      final lines = _flushQueue();
+      return lines.isEmpty ? "NO DATA" : lines.join("\r");
+    }
+    if (op <= 0x3) {
+      _tpIncoming.addAll(d.sublist(1));
+      final lines = <String>[];
+      if (op == 0x0 || op == 0x1) lines.add(_tpLine(0x300, [0xB0 | ((d[0] + 1) & 0x0F)]));
+      if (op == 0x1 || op == 0x3) {
+        final len = (_tpIncoming[0] << 8) | _tpIncoming[1];
+        final req = _tpIncoming.sublist(2, 2 + len);
+        _tpIncoming.clear();
+        final resp = _kwp(req);
+        if (resp != null) {
+          _queueResponse(resp);
+          lines.addAll(_flushQueue());
+        }
+      }
+      return lines.isEmpty ? "NO DATA" : lines.join("\r");
+    }
+    return "NO DATA";
+  }
+
+  List<int>? _kwp(List<int> req) {
+    final dest = _tpDest!;
+    if (req.length == 2 && req[0] == 0x10) return [0x50, req[1]];
+    if (req.length == 2 && req[0] == 0x1A && req[1] == 0x9B) {
+      final id = dest == 0x01 ? "03L906023PJ  R4 2,0L EDC G000SG  5201" : "1K0907379AC ESP MK60EC1  H30 0107";
+      return [0x5A, 0x9B, ...id.codeUnits];
+    }
+    if (req.length == 4 && req[0] == 0x18) {
+      final faults = tp20Modules[dest]!;
+      final resp = [0x58, faults.length, for (final (code, status) in faults) ...[code >> 8, code & 0xFF, status]];
+      if (tp20SlowModules.contains(dest)) {
+        _tpPending = true;
+        _tpPendingResponse = resp;
+        return [0x7F, 0x18, 0x78];
+      }
+      return resp;
+    }
+    return [0x7F, req.isEmpty ? 0 : req[0], 0x11];
+  }
+
+  /// Dzieli odpowiedź na pakiety TP2.0; co 4. pakiet (i ostatni) wymaga ACK od testera.
+  void _queueResponse(List<int> msg) {
+    final payload = [msg.length >> 8, msg.length & 0xFF, ...msg];
+    final chunks = [
+      for (int i = 0; i < payload.length; i += 7) payload.sublist(i, i + 7 > payload.length ? payload.length : i + 7),
+    ];
+    for (int i = 0; i < chunks.length; i++) {
+      final last = i == chunks.length - 1;
+      final op = last ? 0x10 : ((i + 1) % 4 == 0 ? 0x00 : 0x20);
+      _tpOutQueue.add([op | _tpEcuSeq, ...chunks[i]]);
+      _tpEcuSeq = (_tpEcuSeq + 1) & 0x0F;
+    }
+  }
+
+  /// Wysyła pakiety do pierwszego wymagającego ACK (włącznie).
+  List<String> _flushQueue() {
+    final lines = <String>[];
+    while (_tpOutQueue.isNotEmpty) {
+      final f = _tpOutQueue.removeAt(0);
+      lines.add(_tpLine(0x300, f));
+      if ((f[0] >> 4) & 0x2 == 0) break; // czeka na ACK
+    }
+    return lines;
   }
 }

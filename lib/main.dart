@@ -14,6 +14,7 @@ Future<void> main() async {
   // Opisy kodów błędów (ok. 4500 kodów, język angielski)
   try {
     DtcCode.loadDescriptions(await rootBundle.loadString("assets/dtc/obd_descriptions_en.json"));
+    DtcCode.loadVagDescriptions(await rootBundle.loadString("assets/dtc/vag_fault_codes_en.json"));
   } catch (_) {}
 
   final obdService = ObdService();

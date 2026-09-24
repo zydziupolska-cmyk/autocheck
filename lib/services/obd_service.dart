@@ -10,6 +10,7 @@ import '../models/dtc_code.dart';
 import '../models/vehicle_info.dart';
 import '../models/vag_modules.dart';
 import 'elm_parser.dart';
+import 'vag_tp20.dart';
 
 enum ObdConnectionStatus {
   disconnected,
@@ -60,6 +61,7 @@ class ObdService extends ChangeNotifier {
   bool _responseCountSupported = false;
   bool _multiPidSupported = false;
   String? _stnId; // np. "STN2120 v5.6.19" — adapter obsługuje komendy ST
+  String _protocolNumber = "6"; // z ATDPN — do przywrócenia po trybie surowego CAN
   bool _stpxSupported = false;
   final Map<String, String> _adapterInfo = {};
   int _multiPidFailures = 0;
@@ -530,7 +532,9 @@ class ObdService extends ChangeNotifier {
 
     _updateStatus(ObdConnectionStatus.initializing, "Wyszukiwanie protokołu OBD (do 20 s)...");
     final raw0100 = await _sendCommand("0100", timeout: const Duration(seconds: 20));
-    _bus = ElmParser.busFromProtocolNumber(await _sendCommand("ATDPN"));
+    final dpn = await _sendCommand("ATDPN");
+    _protocolNumber = dpn.trim().toUpperCase().replaceFirst(RegExp(r'^A'), '');
+    _bus = ElmParser.busFromProtocolNumber(dpn);
     _protocolName = (await _sendCommand("ATDP")).trim();
     _adapterInfo["Protokół"] = _protocolName;
     // Po wyszukaniu protokołu formatowanie jeszcze raz — na wypadek resetu przez adapter
@@ -1008,6 +1012,58 @@ class ObdService extends ChangeNotifier {
     return results;
   }
 
+  /// Odczytuje kody usterek z modułów VAG starszych platform (PQ) przez TP2.0 / KWP2000.
+  /// Adapter jest na czas skanu przełączany na surowy CAN (protokół użytkownika B),
+  /// a potem przywracany do normalnej pracy.
+  Future<List<ModuleScanResult>> scanVagTp20Modules({
+    void Function(int done, int total, String moduleName)? onProgress,
+    List<VagTp20Module> modules = VagTp20Module.all,
+  }) async {
+    final results = <ModuleScanResult>[];
+    if (!canScanVagModules) return results;
+    final tp = Tp20Client((cmd, {timeout = const Duration(seconds: 4)}) => _sendCommand(cmd, timeout: timeout));
+    try {
+      await tp.enterRawMode();
+      for (int i = 0; i < modules.length; i++) {
+        if (!_hasTransport) break;
+        final m = modules[i];
+        onProgress?.call(i, modules.length, m.name);
+        final descriptor = VagModule(m.name, "TP2.0 ${m.addressHex}", m.addressHex, "");
+        bool opened = false;
+        try {
+          opened = await tp.open(m.address);
+          if (!opened) {
+            results.add(ModuleScanResult(descriptor, responded: false, dtcs: const []));
+            continue;
+          }
+          await tp.startSession();
+          final ident = await tp.identification();
+          final faults = await tp.readFaults() ?? const <(int, int)>[];
+          final dtcs = [
+            for (final (code, status) in faults)
+              DtcCode.fromVagFault(code, obdCode: Tp20Client.vagToObdCode(code)).withSource(
+                ecuLabel: "${m.name} (adres ${m.addressHex}, TP2.0) • status ${status.toRadixString(16).padLeft(2, '0').toUpperCase()}",
+              ),
+          ];
+          results.add(ModuleScanResult(descriptor, responded: true, dtcs: dtcs, identification: ident));
+        } on Tp20Exception catch (_) {
+          results.add(ModuleScanResult(descriptor, responded: opened, dtcs: const []));
+        } finally {
+          if (opened) await tp.close();
+        }
+      }
+      if (modules.isNotEmpty) onProgress?.call(modules.length, modules.length, modules.last.name);
+    } finally {
+      // Powrót do normalnej pracy: protokół z autodetekcji, formatowanie, domyślny timeout
+      await _sendCommand("ATSP$_protocolNumber");
+      await _applyFormatting();
+      await _sendCommand("ATST32");
+      await _sendCommand("ATCRA");
+      _activeHeader = null;
+    }
+    return results;
+  }
+
   // ===========================================================================
   // Kody błędów (Mode 03 / 07 / 04)
   // ===========================================================================
@@ -1131,5 +1187,8 @@ class ModuleScanResult {
   final bool responded;
   final List<DtcCode> dtcs;
 
-  const ModuleScanResult(this.module, {required this.responded, required this.dtcs});
+  /// Identyfikacja modułu (TP2.0: numer części i nazwa), jeśli dostępna.
+  final String? identification;
+
+  const ModuleScanResult(this.module, {required this.responded, required this.dtcs, this.identification});
 }

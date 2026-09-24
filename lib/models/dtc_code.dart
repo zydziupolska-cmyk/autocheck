@@ -380,6 +380,43 @@ class DtcCode {
 
   static int get descriptionCount => _descriptions.length;
 
+  /// Opisy 5-cyfrowych kodów VAG (KWP1281/KWP2000) — np. „00532” → „Supply Voltage B+”.
+  static Map<String, String> _vagDescriptions = {};
+
+  static void loadVagDescriptions(String json) {
+    final data = jsonDecode(json) as Map<String, dynamic>;
+    final codes = (data["codes"] ?? data) as Map<String, dynamic>;
+    _vagDescriptions = {for (final e in codes.entries) if (!e.key.startsWith("_")) e.key: e.value.toString()};
+  }
+
+  /// Kod usterki VAG z modułu KWP2000 (TP2.0). Kody 16384+ to zakodowane kody P
+  /// (np. 16684 = P0300) — wtedy używany jest opis kodu P.
+  static DtcCode fromVagFault(int code, {String? obdCode}) {
+    final five = code.toString().padLeft(5, '0');
+    if (obdCode != null) {
+      final base = getByCode(obdCode, profile: VehicleProfile.vag);
+      return DtcCode(
+        code: "$five / $obdCode",
+        title: base.title,
+        category: base.category,
+        description: base.description,
+        commonCauses: base.commonCauses,
+        diagnosticsSteps: base.diagnosticsSteps,
+      );
+    }
+    final desc = _vagDescriptions[five];
+    return DtcCode(
+      code: five,
+      title: desc ?? "Kod usterki VAG $five",
+      category: "Kod producenta VAG",
+      description: desc != null
+          ? "Opis kodu VAG (EN): $desc."
+          : "Kod usterki VAG spoza wbudowanej bazy — sprawdź jego znaczenie w dokumentacji serwisowej.",
+      commonCauses: const ["Usterka elementu wskazanego w opisie kodu lub jego instalacji elektrycznej"],
+      diagnosticsSteps: const ["Sprawdź wtyczki i przewody elementu wskazanego w opisie kodu."],
+    );
+  }
+
   /// Wczytuje opisy z JSON: {"codes": {"P0087": "...", ...}}.
   static void loadDescriptions(String json) {
     final data = jsonDecode(json) as Map<String, dynamic>;

@@ -194,6 +194,28 @@ starszych — nie. Mode 04 kasuje kody po potwierdzeniu; aplikacja sprawdza odpo
   modułu usługą UDS 19 02 (jak Auto-Scan). Działa z modułami UDS (MQB, MLB i nowsze); starsze moduły
   (PQ, TP2.0) nie odpowiadają i są pomijane.
 
+### Adaptery STN (vLinker, OBDLink)
+
+vLinker MC+ przyjmuje komendy ELM327 (AT), STN (ST) i własne makra VT — nie ma osobnego
+„trybu natywnego”. Aplikacja przy połączeniu pyta o `STI`/`STDI`; jeśli adapter ma układ STN,
+sprawdza i używa `STPX D:<dane>,R:1` (składnia jak w ddt4all), dzięki czemu adapter kończy
+zapytanie po pierwszej odpowiedzi także dla odpowiedzi wieloramkowych. Protokół (`ATSP0`) jest
+ustawiany przed formatowaniem, a formatowanie jest ponawiane po wyszukaniu protokołu — niektóre
+adaptery (np. vLinker FS) resetują nagłówki po `ATSP`. Szczegóły adaptera: ekran Połączenie →
+„Szczegóły adaptera” (z kopiowaniem).
+
+### VAG TP2.0 (starsze platformy PQ)
+
+`lib/services/vag_tp20.dart` — moduły VAG starszych platform (Touran 1T, Golf V/VI, Passat
+B6/B7, Octavia II, Rapid…) rozmawiają KWP2000 przez TP2.0, a nie UDS. Adapter jest na czas skanu
+przełączany na surowy CAN 11-bit 500 kbps (`AT PB C0 01`, `AT SP B`), aplikacja otwiera kanał
+(`<adres> C0 00 10 00 03 01` na 0x200), ustawia parametry (`A0 0F 8A FF 4A FF`), obsługuje
+pakiety i potwierdzenia, sesję `10 89`, identyfikację `1A 9B` i odczyt kodów `18 02 FF 00`.
+Schemat za [jazdw/vag-blocks](https://github.com/jazdw/vag-blocks) i [jazdw.net/tp20](https://jazdw.net/tp20).
+Kody 5-cyfrowe VAG mają opisy z `assets/dtc/vag_fault_codes_en.json`; kody 16384+ to
+zakodowane kody P (np. 16684 = P0300). Przycisk „Skanuj wszystkie moduły (VAG)” wykonuje skan
+UDS i TP2.0 i łączy wyniki.
+
 ## Testy
 
 ```bash

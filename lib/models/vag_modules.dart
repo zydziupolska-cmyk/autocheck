@@ -103,3 +103,48 @@ class VagModule {
     VagModule("Senso Brake Syste", "SensoBrakeSyste", "762", "7CC"),
   ];
 }
+
+/// Moduły VAG adresowane przez TP2.0 (KWP2000) — adresy logiczne jak w VCDS.
+/// Dotyczy starszych platform (PQ: Golf V/VI, Passat B6/B7, Touran 1T, Octavia II,
+/// Rapid, Fabia II/III…). Nazwy za jazdw/vag-blocks.
+class VagTp20Module {
+  final int address;
+  final String name;
+  const VagTp20Module(this.address, this.name);
+
+  String get addressHex => address.toRadixString(16).padLeft(2, '0').toUpperCase();
+
+  static const List<VagTp20Module> all = [
+    VagTp20Module(0x01, "Silnik"),
+    VagTp20Module(0x02, "Skrzynia biegów"),
+    VagTp20Module(0x03, "ABS / ESP"),
+    VagTp20Module(0x08, "Klimatyzacja / ogrzewanie"),
+    VagTp20Module(0x09, "Elektronika centralna"),
+    VagTp20Module(0x10, "Czujniki parkowania 2"),
+    VagTp20Module(0x11, "Silnik 2"),
+    VagTp20Module(0x13, "Tempomat aktywny (ACC)"),
+    VagTp20Module(0x14, "Zawieszenie"),
+    VagTp20Module(0x15, "Poduszki powietrzne"),
+    VagTp20Module(0x16, "Elektronika kierownicy"),
+    VagTp20Module(0x17, "Zestaw wskaźników"),
+    VagTp20Module(0x18, "Ogrzewanie postojowe"),
+    VagTp20Module(0x19, "Gateway (magistrala)"),
+    VagTp20Module(0x22, "Napęd 4x4"),
+    VagTp20Module(0x25, "Immobilizer"),
+    VagTp20Module(0x36, "Fotel kierowcy"),
+    VagTp20Module(0x37, "Radio / nawigacja"),
+    VagTp20Module(0x42, "Drzwi kierowcy"),
+    VagTp20Module(0x44, "Wspomaganie kierownicy"),
+    VagTp20Module(0x46, "Moduł komfortu"),
+    VagTp20Module(0x52, "Drzwi pasażera"),
+    VagTp20Module(0x53, "Hamulec postojowy (EPB)"),
+    VagTp20Module(0x55, "Regulacja reflektorów"),
+    VagTp20Module(0x56, "Radio"),
+    VagTp20Module(0x61, "Regulacja akumulatora"),
+    VagTp20Module(0x62, "Drzwi tylne lewe"),
+    VagTp20Module(0x65, "Kontrola ciśnienia opon"),
+    VagTp20Module(0x72, "Drzwi tylne prawe"),
+    VagTp20Module(0x76, "Czujniki parkowania"),
+    VagTp20Module(0x77, "Telefon"),
+  ];
+}
