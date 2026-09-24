@@ -45,17 +45,8 @@ class DiagnosticScreen extends StatelessWidget {
                   style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
                 ),
               )
-            else ...[
-              if (session.isDemo)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 10),
-                  child: Text(
-                    "Analiza przykładowego logu DEMO z symulatora — nie dotyczy Twojego samochodu.",
-                    style: TextStyle(color: AppTheme.cyan, fontSize: 12, fontWeight: FontWeight.w600),
-                  ),
-                ),
+            else
               _buildHealthBanner(anomalies),
-            ],
 
             const SizedBox(height: 16),
 

@@ -65,9 +65,6 @@ class LogSession {
   /// Opis pojazdu, z którego pochodzi log (np. "Volkswagen Touran (1T) • WVG...").
   final String? vehicleLabel;
 
-  /// Log demonstracyjny z symulatora (nie jest zapisywany w historii).
-  final bool isDemo;
-
   LogSession({
     required this.id,
     required this.title,
@@ -76,7 +73,6 @@ class LogSession {
     required this.points,
     this.isDiesel = false,
     this.vehicleLabel,
-    this.isDemo = false,
   }) : durationSec = points.isEmpty ? 0.0 : (points.last.timeMs - points.first.timeMs) / 1000.0;
 
   Map<String, dynamic> toJson() => {

@@ -120,10 +120,24 @@ void main() {
       expect(pid("0149").decoder([204]), closeTo(100.0, 1.0));
     });
 
-    test('liczniki wypadania zapłonów i sadza DPF są tylko w symulatorze', () {
-      for (final key in ["MIS_1", "MIS_2", "MIS_3", "MIS_4", "DPF_SOOT"]) {
-        expect(ObdPid.getByShortName(key)!.simulatorOnly, isTrue, reason: key);
-        expect(ObdPid.getByShortName(key)!.mode01Pid, isNull, reason: key);
+    test('licznik wypadania zapłonów z Mode 06 (TID 0C = bieżący cykl)', () {
+      final mis3 = ObdPid.getByShortName("MIS_3")!;
+      expect(mis3.code, "06A4");
+      expect(mis3.mode06Mid, 0xA4);
+      // Dwa rekordy: TID 0B (średnia 10 cykli) = 2, TID 0C (bieżący cykl) = 7
+      final data = [
+        0xA4, 0x0B, 0x24, 0x00, 0x02, 0x00, 0x00, 0xFF, 0xFF,
+        0xA4, 0x0C, 0x24, 0x00, 0x07, 0x00, 0x00, 0xFF, 0xFF,
+      ];
+      expect(mis3.decoder(data), 7);
+      expect(mis3.decoder(data.sublist(0, 9)), 2);
+      expect(mis3.decoder([]).isNaN, isTrue);
+    });
+
+    test('brak parametrów bez standardowego PID-u OBD-II', () {
+      expect(ObdPid.getByShortName("DPF_SOOT"), isNull);
+      for (final p in ObdPid.standardPids) {
+        expect(p.mode01Pid != null || p.mode06Mid != null, isTrue, reason: p.code);
       }
     });
   });

@@ -9,7 +9,6 @@ import '../models/log_point.dart';
 import '../models/obd_pid.dart';
 import 'anomaly_engine.dart';
 import 'obd_service.dart';
-import 'simulator_service.dart';
 import '../models/trip_report.dart';
 
 class DataloggerService extends ChangeNotifier {
@@ -78,9 +77,7 @@ class DataloggerService extends ChangeNotifier {
       if (selection.isEmpty && available.isNotEmpty) selection = {available.first};
       _selectedPidKeys = selection;
       notifyListeners();
-    } else if (_isRecording &&
-        status != ObdConnectionStatus.simulated &&
-        status != ObdConnectionStatus.connected) {
+    } else if (_isRecording && status != ObdConnectionStatus.connected) {
       // Utracono połączenie w trakcie nagrywania — zachowaj to, co już zebrano
       stopRecording();
     }
@@ -117,13 +114,7 @@ class DataloggerService extends ChangeNotifier {
     _recordingStartTime = DateTime.now();
     notifyListeners();
 
-    if (obdService.status == ObdConnectionStatus.simulated) {
-      obdService.simulator.startLivePull(
-        scenario: obdService.selectedScenario,
-        onPoint: addPoint,
-        onFinished: stopRecording,
-      );
-    } else if (obdService.status == ObdConnectionStatus.connected) {
+    if (obdService.status == ObdConnectionStatus.connected) {
       _runObdLoop();
     } else {
       _isRecording = false;
@@ -167,7 +158,6 @@ class DataloggerService extends ChangeNotifier {
   void stopRecording() {
     if (!_isRecording) return;
     _isRecording = false;
-    obdService.simulator.stopLivePull();
 
     final isDiesel = _isDiesel;
     _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: isDiesel);
@@ -175,11 +165,10 @@ class DataloggerService extends ChangeNotifier {
     if (_currentPoints.isNotEmpty) {
       final now = DateTime.now();
       final info = obdService.vehicleInfo;
-      final isSim = obdService.status == ObdConnectionStatus.simulated;
       final usedKeys = <String>{for (final p in _currentPoints) ...p.values.keys};
       final session = LogSession(
         id: now.millisecondsSinceEpoch.toString(),
-        title: "${isSim ? 'Symulacja' : 'Log'} ${_two(now.hour)}:${_two(now.minute)}:${_two(now.second)} (${_currentPoints.length} próbek)",
+        title: "Log ${_two(now.hour)}:${_two(now.minute)}:${_two(now.second)} (${_currentPoints.length} próbek)",
         createdAt: now,
         activePidKeys: _selectedPidKeys.where(usedKeys.contains).toList(),
         points: List.from(_currentPoints),
@@ -209,7 +198,7 @@ class DataloggerService extends ChangeNotifier {
     return AnomalyEngine.generateTripReport(session.points, isDiesel: session.isDiesel);
   }
 
-  /// Dodaje nowy punkt pomiarowy z OBD lub Symulatora
+  /// Dodaje nowy punkt pomiarowy
   void addPoint(LogPoint point) {
     _currentPoints.add(point);
     _samplesCountLastSec++;
@@ -222,24 +211,6 @@ class DataloggerService extends ChangeNotifier {
       _lastHzCheck = now;
     }
 
-    notifyListeners();
-  }
-
-  /// Ładuje gotowy log demonstracyjny do natychmiastowej analizy
-  void loadDemoRun(SimScenario scenario) {
-    if (_isRecording) stopRecording();
-    _currentPoints = SimulatorService.generateFullRun(scenario);
-    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints);
-    final keys = <String>{for (final p in _currentPoints) ...p.values.keys};
-
-    _activeSession = LogSession(
-      id: "demo_${scenario.name}",
-      title: "DEMO: ${scenario.title}",
-      createdAt: DateTime.now(),
-      activePidKeys: keys.toList(),
-      points: List.from(_currentPoints),
-      isDemo: true,
-    );
     notifyListeners();
   }
 

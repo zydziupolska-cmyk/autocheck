@@ -6,7 +6,7 @@ class DtcCode {
   final List<String> commonCauses; // Typowe przyczyny (np. w silnikach TSI)
   final List<String> diagnosticsSteps; // Kroki sprawdzenia
 
-  /// Sterownik, który zgłosił kod (np. "Silnik (7E8)"), null dla danych z symulatora.
+  /// Sterownik, który zgłosił kod (np. "Silnik (7E8)"), null gdy nieznany.
   final String? ecuLabel;
 
   /// Kod oczekujący (Mode 07) — wykryty w bieżącym cyklu jazdy, jeszcze niepotwierdzony.

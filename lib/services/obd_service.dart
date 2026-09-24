@@ -9,15 +9,12 @@ import '../models/extended_pid.dart';
 import '../models/dtc_code.dart';
 import '../models/vehicle_info.dart';
 import 'elm_parser.dart';
-import 'simulator_service.dart';
 
 enum ObdConnectionStatus {
   disconnected,
-  scanning,
   connecting,
   initializing,
   connected,
-  simulated,
   error,
 }
 
@@ -61,12 +58,10 @@ class ObdService extends ChangeNotifier {
   String? _activeHeader; // ostatnio ustawiony ATSH
   bool _responseCountSupported = false;
   Set<int> _supportedPids = {};
+  Set<int> _supportedMode06 = {};
   double? _baroKpa;
   String _adapterId = "";
   String _protocolName = "";
-
-  final SimulatorService _simulator = SimulatorService();
-  SimScenario _selectedScenario = SimScenario.healthy;
 
   List<ObdPid> _discoveredPids = uniqueStandardPids();
   VehicleInfo? _vehicleInfo;
@@ -78,17 +73,10 @@ class ObdService extends ChangeNotifier {
   BluetoothDevice? get connectedDevice => _bleDevice;
   List<ObdPid> get discoveredPids => _discoveredPids;
   VehicleInfo? get vehicleInfo => _vehicleInfo;
-  SimulatorService get simulator => _simulator;
   String get adapterId => _adapterId;
   String get protocolName => _protocolName;
   String? get engineEcuAddress => _engineEcu;
   Set<int> get supportedPidNumbers => _supportedPids;
-
-  SimScenario get selectedScenario => _selectedScenario;
-  set selectedScenario(SimScenario s) {
-    _selectedScenario = s;
-    notifyListeners();
-  }
 
   /// Katalog czujników bez duplikatów nazw (np. dwa warianty PEDAL).
   static List<ObdPid> uniqueStandardPids() {
@@ -103,27 +91,6 @@ class ObdService extends ChangeNotifier {
     _status = s;
     _statusMessage = msg;
     notifyListeners();
-  }
-
-  // ===========================================================================
-  // Symulator
-  // ===========================================================================
-
-  /// Włącza tryb symulatora (bez konieczności podłączania auta)
-  void connectSimulator(SimScenario scenario) {
-    _closeTransport();
-    _selectedScenario = scenario;
-    _discoveredPids = uniqueStandardPids();
-
-    if (scenario == SimScenario.skodaRapidInjector) {
-      _vehicleInfo = VehicleInfo.skodaRapidSample;
-    } else if (scenario == SimScenario.peugeotIdleHunting) {
-      _vehicleInfo = VehicleInfo.peugeot307Sample;
-    } else {
-      _vehicleInfo = VehicleInfo.genericSample;
-    }
-
-    _updateStatus(ObdConnectionStatus.simulated, "Połączono w trybie symulatora: ${scenario.title}");
   }
 
   // ===========================================================================
@@ -297,14 +264,13 @@ class ObdService extends ChangeNotifier {
 
   void _onTransportLost(String msg) {
     if (_closing) return;
-    if (_status == ObdConnectionStatus.disconnected || _status == ObdConnectionStatus.simulated) return;
+    if (_status == ObdConnectionStatus.disconnected) return;
     _closeTransport();
     _updateStatus(ObdConnectionStatus.disconnected, msg);
   }
 
   /// Rozłączenie
   void disconnect() {
-    _simulator.stopLivePull();
     _closeTransport();
     _updateStatus(ObdConnectionStatus.disconnected, "Rozłączono");
   }
@@ -312,7 +278,6 @@ class ObdService extends ChangeNotifier {
   Future<void> _closeTransport() async {
     _closing = true;
     try {
-      _simulator.stopLivePull();
       final pending = _pendingResponse;
       _pendingResponse = null;
       if (pending != null && !pending.isCompleted) pending.complete("");
@@ -347,6 +312,7 @@ class ObdService extends ChangeNotifier {
       _activeHeader = null;
       _responseCountSupported = false;
       _supportedPids = {};
+      _supportedMode06 = {};
       _baroKpa = null;
       _adapterId = "";
       _protocolName = "";
@@ -569,6 +535,22 @@ class ObdService extends ChangeNotifier {
     }
     _supportedPids = supported;
 
+    // Mode 06 — monitory testów pokładowych; $A2-$AD to liczniki wypadania
+    // zapłonów cylindrów 1-12 (tylko CAN, silniki benzynowe).
+    if (_isCan) {
+      final mids = <int>{};
+      for (int range = 0x00; range <= 0xA0; range += 0x20) {
+        if (range > 0 && !mids.contains(range)) break;
+        final hex = range.toRadixString(16).padLeft(2, '0').toUpperCase();
+        final r = await _query("06$hex");
+        final match = r.where((e) => e.matches(0x46, [range])).firstOrNull;
+        if (match == null || match.data.length < 6) break;
+        // Format jak maska Mode 01: [46, MID, A, B, C, D]
+        mids.addAll(ElmParser.decodeSupportedPids([0x41, ...match.data.sublist(1)]));
+      }
+      _supportedMode06 = mids;
+    }
+
     // Sprawdź, czy adapter obsługuje liczbę oczekiwanych odpowiedzi (np. "010C1")
     if (_isCan && _engineHeader != null) {
       await _setHeader(_engineHeader!);
@@ -605,6 +587,11 @@ class ObdService extends ChangeNotifier {
     final list = <ObdPid>[];
     final seen = <String>{};
     for (final pid in ObdPid.standardPids) {
+      final mid = pid.mode06Mid;
+      if (mid != null) {
+        if (_supportedMode06.contains(mid) && seen.add(pid.shortName)) list.add(pid);
+        continue;
+      }
       final n = pid.mode01Pid;
       if (n == null) continue;
       if (_supportedPids.isNotEmpty && !_supportedPids.contains(n)) continue;
@@ -648,7 +635,7 @@ class ObdService extends ChangeNotifier {
   }
 
   Future<double?> _readPidInternal(ObdPid pid) async {
-    if (pid.simulatorOnly || !_hasTransport) return null;
+    if (!_hasTransport) return null;
 
     String cmd;
     String? header;
@@ -666,11 +653,13 @@ class ObdService extends ChangeNotifier {
     ];
 
     try {
-      final responses = await _query(cmd, header: header, singleFrame: true);
+      // Odpowiedzi Mode 06 bywają wieloramkowe — bez skróconego oczekiwania
+      final responses = await _query(cmd, header: header, singleFrame: service != 0x06);
       final match = responses.where((r) => r.matches(service + 0x40, id)).firstOrNull;
       if (match == null) return null;
 
-      final payload = match.data.sublist(1 + id.length);
+      // Mode 06: rekordy testów zaczynają się od MID, więc zostawiamy go w danych
+      final payload = service == 0x06 ? match.data.sublist(1) : match.data.sublist(1 + id.length);
       if (payload.isEmpty) return null;
       var value = pid.decoder(payload);
 
@@ -707,20 +696,6 @@ class ObdService extends ChangeNotifier {
   /// Odczytuje zapisane (Mode 03) i oczekujące (Mode 07) kody błędów ze wszystkich
   /// sterowników emisyjnych. Zwraca null, gdy nie udało się odczytać pamięci błędów.
   Future<List<DtcCode>?> readDtcCodes() async {
-    if (_status == ObdConnectionStatus.simulated) {
-      switch (_selectedScenario) {
-        case SimScenario.skodaRapidInjector:
-          return [DtcCode.getByCode("P0087"), DtcCode.getByCode("P0301"), DtcCode.getByCode("P0172")];
-        case SimScenario.boostLeak:
-          return [DtcCode.getByCode("P0299")];
-        case SimScenario.knockRetard:
-          return [DtcCode.getByCode("P0300")];
-        case SimScenario.peugeotIdleHunting:
-          return [DtcCode.getByCode("P0443"), DtcCode.getByCode("P0106"), DtcCode.getByCode("P0300")];
-        default:
-          return [];
-      }
-    }
     if (_status != ObdConnectionStatus.connected) return null;
 
     final result = <DtcCode>[];
@@ -747,7 +722,6 @@ class ObdService extends ChangeNotifier {
   /// Kasuje kody błędów (Mode 04). Zwraca true, jeśli sterownik potwierdził.
   /// Wymaga włączonego zapłonu przy wyłączonym silniku.
   Future<bool> clearDtcCodes() async {
-    if (_status == ObdConnectionStatus.simulated) return true;
     if (_status != ObdConnectionStatus.connected) return false;
     final responses = await _query("04", broadcast: true, timeout: const Duration(seconds: 6));
     return responses.any((r) => r.data.isNotEmpty && r.data[0] == 0x44);
@@ -758,17 +732,6 @@ class ObdService extends ChangeNotifier {
   // ===========================================================================
 
   Future<VehicleInfo?> readVehicleInfo() async {
-    if (_status == ObdConnectionStatus.simulated) {
-      if (_selectedScenario == SimScenario.skodaRapidInjector) {
-        _vehicleInfo = VehicleInfo.skodaRapidSample;
-      } else if (_selectedScenario == SimScenario.peugeotIdleHunting) {
-        _vehicleInfo = VehicleInfo.peugeot307Sample;
-      } else {
-        _vehicleInfo = VehicleInfo.genericSample;
-      }
-      notifyListeners();
-      return _vehicleInfo;
-    }
     if (!_hasTransport) return null;
 
     try {

@@ -89,18 +89,9 @@ class _ChartScreenState extends State<ChartScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              "Zarejestruj przyspieszenie w zakładce 'Rejestrator' lub załaduj gotowy log z symulatora.",
+              "Nagraj jazdę w zakładce „Rejestrator” albo wybierz zapisany log w „Historii”.",
               textAlign: TextAlign.center,
               style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: () {
-                logger.loadDemoRun(logger.obdService.selectedScenario);
-              },
-              icon: const Icon(Icons.play_circle),
-              label: const Text("Wczytaj przykładowy log z usterką"),
-              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.cyan, foregroundColor: Colors.black),
             ),
           ],
         ),

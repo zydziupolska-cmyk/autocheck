@@ -2,14 +2,32 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-/// Emulator adaptera ELM327 na TCP, udający samochód z dwoma sterownikami
-/// na CAN 11-bit 500k: silnik (7E8) i skrzynia biegów (7E9) — tak jak
-/// VW Touran 2.0 TDI, na którym zgłoszono problem.
+/// Magistrala emulowanego samochodu.
+enum MockBus {
+  /// ISO 15765-4 CAN 11-bit (większość aut od ok. 2008 r.)
+  can11,
+
+  /// ISO 15765-4 CAN 29-bit (np. część aut GM)
+  can29,
+
+  /// ISO 14230-4 KWP2000 (starsze auta, bez ISO-TP, 3 bajty nagłówka + suma kontrolna)
+  kwp,
+}
+
+/// Emulator adaptera ELM327 na TCP, udający samochód z dwoma sterownikami:
+/// silnik i skrzynia biegów (domyślnie VW Touran 2.0 TDI na CAN 11-bit,
+/// na którym zgłoszono problem). Dostępne warianty: benzyna z licznikami
+/// wypadania zapłonów (Mode 06), CAN 29-bit i KWP2000.
 ///
 /// Odpowiedzi są wysyłane w małych kawałkach (jak przez BLE), obsługiwane są
 /// nagłówki (ATH1/ATH0), ATSH (adresowanie fizyczne), liczba odpowiedzi
 /// ("01001") oraz ISO-TP dla wiadomości wieloramkowych.
 class MockElm327 {
+  final MockBus bus;
+  final bool petrol;
+
+  MockElm327({this.bus = MockBus.can11, this.petrol = false});
+
   late final ServerSocket _server;
   final List<String> receivedCommands = [];
 
@@ -17,7 +35,12 @@ class MockElm327 {
   bool _headers = false;
   bool _spaces = true;
   bool _searched = false;
-  String _header = "7DF";
+  late String _header = _defaultHeader;
+
+  String get _defaultHeader => bus == MockBus.can29 ? "DB33F1" : (bus == MockBus.kwp ? "" : "7DF");
+
+  /// Narastający licznik wypadania zapłonów cylindra 3 (Mode 06, MID $A4).
+  int misfireCyl3 = 0;
 
   /// Kody błędów zapisane w sterowniku silnika (Mode 03), np. [[0x00, 0x87]] = P0087.
   List<List<int>> engineDtcs = [];
@@ -32,8 +55,8 @@ class MockElm327 {
 
   static const vin = "WVGZZZ1TZFW011407";
 
-  static Future<MockElm327> start() async {
-    final mock = MockElm327();
+  static Future<MockElm327> start({MockBus bus = MockBus.can11, bool petrol = false}) async {
+    final mock = MockElm327(bus: bus, petrol: petrol);
     mock._server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     mock._server.listen(mock._handleClient);
     return mock;
@@ -82,19 +105,23 @@ class MockElm327 {
 
     if (ignitionOff) return "UNABLE TO CONNECT";
 
-    final targets = <String>[];
-    if (_header == "7DF") {
-      targets.addAll(["7E8", "7E9"]);
-    } else if (_header == "7E0") {
-      targets.add("7E8");
-    } else if (_header == "7E1") {
-      targets.add("7E9");
+    // (adres odpowiedzi, czy to silnik)
+    final targets = <(String, bool)>[];
+    switch (bus) {
+      case MockBus.can11:
+        if (_header == "7DF" || _header == "7E0") targets.add(("7E8", true));
+        if (_header == "7DF" || _header == "7E1") targets.add(("7E9", false));
+      case MockBus.can29:
+        if (_header == "DB33F1" || _header == "DA10F1") targets.add(("18DAF110", true));
+        if (_header == "DB33F1" || _header == "DA18F1") targets.add(("18DAF118", false));
+      case MockBus.kwp:
+        targets.add(("10", true));
     }
 
     final lines = <String>[];
-    for (final ecu in targets) {
-      final data = ecu == "7E8" ? _engine(request) : _transmission(request);
-      if (data != null) lines.addAll(_format(ecu, data));
+    for (final (ecu, isEngine) in targets) {
+      final data = isEngine ? _engine(request) : _transmission(request);
+      if (data != null) lines.addAll(bus == MockBus.kwp ? _formatKwp(ecu, data) : _format(ecu, data));
     }
     var out = lines.isEmpty ? "NO DATA" : lines.join("\r");
     if (!_searched) {
@@ -108,7 +135,7 @@ class MockElm327 {
     if (at == "Z") {
       _echo = true;
       _headers = false;
-      _header = "7DF";
+      _header = _defaultHeader;
       return "\r\rELM327 v1.5";
     }
     if (at == "I") return "ELM327 v1.5";
@@ -118,8 +145,14 @@ class MockElm327 {
     if (at == "H0") _headers = false;
     if (at == "S0") _spaces = false;
     if (at == "S1") _spaces = true;
-    if (at == "DPN") return "A6";
-    if (at == "DP") return "AUTO, ISO 15765-4 (CAN 11/500)";
+    if (at == "DPN") return {MockBus.can11: "A6", MockBus.can29: "A7", MockBus.kwp: "A5"}[bus]!;
+    if (at == "DP") {
+      return {
+        MockBus.can11: "AUTO, ISO 15765-4 (CAN 11/500)",
+        MockBus.can29: "AUTO, ISO 15765-4 (CAN 29/500)",
+        MockBus.kwp: "AUTO, ISO 14230-4 (KWP FAST)",
+      }[bus]!;
+    }
     if (at == "RV") return "14.5V";
     if (at.startsWith("SH")) _header = at.substring(2);
     return "OK";
@@ -129,7 +162,10 @@ class MockElm327 {
 
   List<String> _format(String ecu, List<int> data) {
     String line(List<int> frame) {
-      final parts = [if (_headers) ecu, ...frame.map(_hex)];
+      final headerParts = ecu.length == 8
+          ? [for (int i = 0; i < 8; i += 2) ecu.substring(i, i + 2)]
+          : [ecu];
+      final parts = [if (_headers) ...headerParts, ...frame.map(_hex)];
       return _spaces ? parts.join(" ") : parts.join();
     }
 
@@ -147,6 +183,44 @@ class MockElm327 {
       seq++;
     }
     return frames;
+  }
+
+  /// KWP2000: bez ISO-TP. Każda linia to nagłówek (83 F1 10), maks. 7 bajtów danych
+  /// i suma kontrolna. Mode 03/07 bez licznika kodów (3 kody na linię), Mode 09
+  /// dzielony na linie z numerem sekwencji i 4 bajtami danych.
+  List<String> _formatKwp(String ecu, List<int> data) {
+    final payloads = <List<int>>[];
+    final service = data[0];
+    if (service == 0x43 || service == 0x47) {
+      final codes = data.sublist(2); // bez licznika — w KWP go nie ma
+      final padded = [...codes];
+      while (padded.isEmpty || padded.length % 6 != 0) {
+        padded.add(0);
+      }
+      for (int i = 0; i < padded.length; i += 6) {
+        payloads.add([service, ...padded.sublist(i, i + 6)]);
+      }
+    } else if (service == 0x49 && data.length > 7) {
+      final body = data.sublist(3);
+      while (body.length % 4 != 0) {
+        body.insert(0, 0);
+      }
+      int seq = 1;
+      for (int i = 0; i < body.length; i += 4) {
+        payloads.add([0x49, data[1], seq++, ...body.sublist(i, i + 4)]);
+      }
+    } else {
+      payloads.add(data);
+    }
+    return [
+      for (final payload in payloads)
+        () {
+          final bytes = [0x83, 0xF1, int.parse(ecu, radix: 16), ...payload];
+          bytes.add(bytes.fold<int>(0, (a, b) => a + b) & 0xFF);
+          final parts = (_headers ? bytes : bytes.sublist(3, bytes.length - 1)).map(_hex);
+          return _spaces ? parts.join(" ") : parts.join();
+        }(),
+    ];
   }
 
   static List<int> _mask(int base, Set<int> supported) {
@@ -175,15 +249,40 @@ class MockElm327 {
     0x78, 0x7A,
   };
 
+  // Dodatkowe PIDy silnika benzynowego: korekty paliwa i kąt zapłonu
+  static const petrolExtra = {0x06, 0x07, 0x0E};
+
+  // Mode 06: maski zakresów + liczniki wypadania zapłonów cylindrów 1-4 ($A2-$A5)
+  static const mode06Supported = {0x01, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xA2, 0xA3, 0xA4, 0xA5};
+
+  Set<int> get _supported => petrol ? {...engineSupported, ...petrolExtra} : engineSupported;
+
+  List<int> _misfireRecord(int mid, int count) => [
+        mid, 0x0B, 0x24, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, // średnia z 10 cykli
+        mid, 0x0C, 0x24, count >> 8, count & 0xFF, 0x00, 0x00, 0xFF, 0xFF, // bieżący cykl
+      ];
+
   List<int>? _engine(List<int> req) {
     if (req.isEmpty) return null;
     switch (req[0]) {
+      case 0x06:
+        if (!petrol || bus == MockBus.kwp || req.length < 2) return null;
+        final mid = req[1];
+        if (mid % 0x20 == 0) return [0x46, mid, ..._mask(mid, mode06Supported)];
+        if (mid >= 0xA2 && mid <= 0xA5) return [0x46, ..._misfireRecord(mid, mid == 0xA4 ? misfireCyl3 : 0)];
+        return null;
       case 0x01:
         if (req.length < 2) return null;
         final pid = req[1];
-        if (pid % 0x20 == 0) return [0x41, pid, ..._mask(pid, engineSupported)];
-        if (!engineSupported.contains(pid)) return null;
+        if (pid % 0x20 == 0) return [0x41, pid, ..._mask(pid, _supported)];
+        if (!_supported.contains(pid)) return null;
         switch (pid) {
+          case 0x06:
+            return [0x41, 0x06, 128]; // STFT 0%
+          case 0x07:
+            return [0x41, 0x07, 133]; // LTFT +3.9%
+          case 0x0E:
+            return [0x41, 0x0E, 150]; // 11°
           case 0x0C:
             final raw = (rpm * 4).round();
             return [0x41, 0x0C, raw >> 8, raw & 0xFF];
@@ -206,7 +305,7 @@ class MockElm327 {
           case 0x49:
             return [0x41, 0x49, 38]; // pedał w spoczynku (~15%)
           case 0x51:
-            return [0x41, 0x51, 4]; // Diesel
+            return [0x41, 0x51, petrol ? 1 : 4]; // Benzyna / Diesel
           case 0x31:
             return [0x41, 0x31, 0x04, 0xD2]; // 1234 km
           case 0x21:
@@ -233,7 +332,7 @@ class MockElm327 {
           case 0x02:
             return [0x49, 0x02, 0x01, ...vin.codeUnits];
           case 0x04:
-            return [0x49, 0x04, 0x01, ..._ascii("03L906023PJ", 16)];
+            return [0x49, 0x04, 0x01, ..._ascii(petrol ? "04E906027HA" : "03L906023PJ", 16)];
           case 0x0A:
             return [0x49, 0x0A, 0x01, ..._ascii("ECM\u0000-EngineControl", 20)];
         }

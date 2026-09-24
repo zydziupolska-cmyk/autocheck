@@ -4,13 +4,14 @@ import 'package:provider/provider.dart';
 import 'package:autocheck/models/obd_pid.dart';
 import 'package:autocheck/models/anomaly.dart';
 import 'package:autocheck/models/vehicle_info.dart';
-import 'package:autocheck/services/simulator_service.dart';
 import 'package:autocheck/services/anomaly_engine.dart';
 import 'package:autocheck/services/obd_service.dart';
 import 'package:autocheck/services/datalogger_service.dart';
 import 'package:autocheck/main.dart';
 
 import 'package:autocheck/models/extended_pid.dart';
+
+import 'support/synthetic_logs.dart';
 
 void main() {
   group('OBD-II Decoders and Models Test', () {
@@ -45,9 +46,9 @@ void main() {
     });
   });
 
-  group('Simulator and Anomaly Detection Engine Tests', () {
+  group('Anomaly Detection Engine Tests (synthetic logs)', () {
     test('Healthy pull produces no critical anomalies', () {
-      final points = SimulatorService.generateFullRun(SimScenario.healthy);
+      final points = generateSyntheticRun(SyntheticScenario.healthy);
       final anomalies = AnomalyEngine.analyzeSession(points);
       
       final criticals = anomalies.where((a) => a.severity == AnomalySeverity.critical).toList();
@@ -55,7 +56,7 @@ void main() {
     });
 
     test('Boost leak scenario detects sudden pressure drop', () {
-      final points = SimulatorService.generateFullRun(SimScenario.boostLeak);
+      final points = generateSyntheticRun(SyntheticScenario.boostLeak);
       final anomalies = AnomalyEngine.analyzeSession(points);
       
       final hasBoostLeak = anomalies.any((a) => a.id.startsWith('boost_'));
@@ -63,7 +64,7 @@ void main() {
     });
 
     test('Knock retard scenario detects timing retard anomaly', () {
-      final points = SimulatorService.generateFullRun(SimScenario.knockRetard);
+      final points = generateSyntheticRun(SyntheticScenario.knockRetard);
       final anomalies = AnomalyEngine.analyzeSession(points);
       
       final hasKnock = anomalies.any((a) => a.id.startsWith('ign_'));
@@ -71,7 +72,7 @@ void main() {
     });
 
     test('Lean AFR scenario detects dangerous lean condition under load', () {
-      final points = SimulatorService.generateFullRun(SimScenario.leanAfr);
+      final points = generateSyntheticRun(SyntheticScenario.leanAfr);
       final anomalies = AnomalyEngine.analyzeSession(points);
       
       final hasLean = anomalies.any((a) => a.id.startsWith('afr_'));
@@ -79,7 +80,7 @@ void main() {
     });
 
     test('Skoda Rapid scenario detects low fuel rail pressure and rich trim', () {
-      final points = SimulatorService.generateFullRun(SimScenario.skodaRapidInjector);
+      final points = generateSyntheticRun(SyntheticScenario.skodaRapidInjector);
       final anomalies = AnomalyEngine.analyzeSession(points);
       
       final hasHpfp = anomalies.any((a) => a.id.startsWith('rail_low_'));
@@ -87,7 +88,7 @@ void main() {
     });
 
     test('Peugeot 307 CC scenario detects idle hunting and VVT jamming vacuum loss', () {
-      final points = SimulatorService.generateFullRun(SimScenario.peugeotIdleHunting);
+      final points = generateSyntheticRun(SyntheticScenario.peugeotIdleHunting);
       final anomalies = AnomalyEngine.analyzeSession(points);
       
       final hasIdleHunt = anomalies.any((a) => a.id.startsWith('idle_hunting_'));
@@ -95,7 +96,7 @@ void main() {
     });
 
     test('DPF blocked scenario detects underboost caused by high exhaust backpressure (RCA)', () {
-      final points = SimulatorService.generateFullRun(SimScenario.dpfBlockedUnderboost);
+      final points = generateSyntheticRun(SyntheticScenario.dpfBlockedUnderboost);
       final anomalies = AnomalyEngine.analyzeSession(points);
       
       final hasUnderboostAndDpf = anomalies.any((a) => a.id.startsWith('dpf_underboost_'));
@@ -126,7 +127,7 @@ void main() {
   });
 
   test('DPF EGR Delete scenario should detect tampering', () {
-    final points = SimulatorService.generateFullRun(SimScenario.dpfEgrDelete);
+    final points = generateSyntheticRun(SyntheticScenario.dpfEgrDelete);
     final anomalies = AnomalyEngine.analyzeSession(points);
     final hasDpfTampering = anomalies.any((a) => a.id.startsWith('dpf_delete_'));
     final hasEgrTampering = anomalies.any((a) => a.id.startsWith('egr_software_delete_'));
@@ -135,18 +136,18 @@ void main() {
   });
 
   test('Lazy O2 Sensor scenario should detect delayed AFR response', () {
-    final points = SimulatorService.generateFullRun(SimScenario.lazyO2Sensor);
+    final points = generateSyntheticRun(SyntheticScenario.lazyO2Sensor);
     final anomalies = AnomalyEngine.analyzeSession(points);
     final hasLazyAfr = anomalies.any((a) => a.id.startsWith('lazy_afr_'));
     expect(hasLazyAfr, isTrue);
   });
 
   test('Misfire Analyzer should differentiate between fuel and spark issues', () {
-    final pointsFuel = SimulatorService.generateFullRun(SimScenario.cylinderMisfireFuel);
+    final pointsFuel = generateSyntheticRun(SyntheticScenario.cylinderMisfireFuel);
     final anomaliesFuel = AnomalyEngine.analyzeSession(pointsFuel);
     expect(anomaliesFuel.any((a) => a.id.startsWith('misfire_fuel_3')), isTrue);
 
-    final pointsSpark = SimulatorService.generateFullRun(SimScenario.cylinderMisfireSpark);
+    final pointsSpark = generateSyntheticRun(SyntheticScenario.cylinderMisfireSpark);
     final anomaliesSpark = AnomalyEngine.analyzeSession(pointsSpark);
     expect(anomaliesSpark.any((a) => a.id.startsWith('misfire_spark_3')), isTrue);
   });

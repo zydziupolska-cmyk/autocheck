@@ -1037,16 +1037,21 @@ class AnomalyEngine {
 
   /// Krzyżowa analiza wypadania zapłonów: odróżnia problem z cewką/świecą od wtryskiwacza
   static void _checkMisfireRootCause(List<LogPoint> points, List<Anomaly> anomalies) {
-    // Sprawdzamy wszystkie cylindry od 1 do 4
+    // Sprawdzamy cylindry 1-4 (liczniki Mode 06, monitory $A2-$A5)
     for (int cyl = 1; cyl <= 4; cyl++) {
       final misKey = "MIS_$cyl";
       if (!points.any((p) => p.values.containsKey(misKey))) continue;
 
-      // Szukamy momentu gdzie MISFIRE rośnie
+      // Licznik Mode 06 jest narastający w cyklu jazdy — wypadnięcie zapłonu
+      // to PRZYROST licznika między kolejnymi odczytami.
+      double? previous;
       for (int i = 0; i < points.length; i++) {
         final p = points[i];
-        final misfires = p.values[misKey];
-        if (misfires == null || misfires == 0.0) continue;
+        final counter = p.values[misKey];
+        if (counter == null) continue;
+        final misfires = previous == null ? 0.0 : counter - previous;
+        previous = counter;
+        if (misfires <= 0.0) continue;
 
         // Znaleźliśmy wypadanie zapłonu. Patrzymy na korekty w tym czasie.
         if (p.values.containsKey("STFT") && p.values.containsKey("LTFT")) {

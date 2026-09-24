@@ -5,9 +5,7 @@ import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
 import 'package:provider/provider.dart';
 import '../models/dtc_code.dart';
 import '../models/vehicle_info.dart';
-import '../services/datalogger_service.dart';
 import '../services/obd_service.dart';
-import '../services/simulator_service.dart';
 import '../theme/app_theme.dart';
 
 class ConnectionScreen extends StatefulWidget {
@@ -97,7 +95,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       _showSnack(
         obd.status == ObdConnectionStatus.connected
             ? "Sterownik nie odpowiedział na zapytanie o kody błędów."
-            : "Najpierw połącz się z samochodem lub symulatorem.",
+            : "Najpierw połącz się z samochodem.",
         AppTheme.red,
       );
     }
@@ -139,7 +137,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   @override
   Widget build(BuildContext context) {
     final obd = context.watch<ObdService>();
-    final logger = context.read<DataloggerService>();
 
     return Scaffold(
       appBar: AppBar(
@@ -191,10 +188,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             // Sekcja Diagnostyki Błędów Silnika (DTC / Check Engine)
             _buildDtcScannerSection(obd),
 
-            const SizedBox(height: 24),
-
-            // Sekcja Wbudowanego Symulatora
-            _buildSimulatorSection(obd, logger),
           ],
         ),
       ),
@@ -213,13 +206,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         badgeColor = AppTheme.green;
         badgeIcon = Icons.check_circle;
         break;
-      case ObdConnectionStatus.simulated:
-        badgeColor = AppTheme.cyan;
-        badgeIcon = Icons.sports_motorsports;
-        break;
       case ObdConnectionStatus.connecting:
       case ObdConnectionStatus.initializing:
-      case ObdConnectionStatus.scanning:
         badgeColor = AppTheme.yellow;
         badgeIcon = Icons.sync;
         break;
@@ -280,7 +268,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               ],
             ),
           ),
-          if (obd.status == ObdConnectionStatus.connected || obd.status == ObdConnectionStatus.simulated)
+          if (obd.status == ObdConnectionStatus.connected)
             IconButton(
               icon: const Icon(Icons.close, color: AppTheme.red),
               tooltip: "Rozłącz",
@@ -565,120 +553,6 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 ),
               );
             }).toList(),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSimulatorSection(ObdService obd, DataloggerService logger) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppTheme.cyan.withAlpha(80)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(Icons.sports_motorsports, color: AppTheme.cyan, size: 20),
-              SizedBox(width: 8),
-              Text(
-                "Wbudowany Symulator Jazdy & Usterek",
-                style: TextStyle(
-                  color: AppTheme.textPrimary,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            "Pozwala przetestować działanie wykresów, logowanie i algorytmy diagnostyczne w domu bez podłączania samochodu.",
-            style: TextStyle(color: AppTheme.textSecondary, fontSize: 13),
-          ),
-          const SizedBox(height: 14),
-          DropdownButtonFormField<SimScenario>(
-            initialValue: obd.selectedScenario,
-            dropdownColor: AppTheme.surfaceLight,
-            decoration: InputDecoration(
-              labelText: "Wybierz scenariusz testowy",
-              labelStyle: const TextStyle(color: AppTheme.cyan),
-              filled: true,
-              fillColor: AppTheme.surfaceLight,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            items: SimScenario.values.map((s) {
-              return DropdownMenuItem(
-                value: s,
-                child: Text(
-                  s.title,
-                  style: const TextStyle(fontSize: 13, color: AppTheme.textPrimary),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              );
-            }).toList(),
-            onChanged: (val) {
-              if (val != null) {
-                obd.selectedScenario = val;
-              }
-            },
-          ),
-          const SizedBox(height: 8),
-          Text(
-            obd.selectedScenario.description,
-            style: const TextStyle(color: AppTheme.textMuted, fontSize: 12, fontStyle: FontStyle.italic),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () {
-                    obd.connectSimulator(obd.selectedScenario);
-                    logger.loadDemoRun(obd.selectedScenario);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text("Załadowano log demonstracyjny: ${obd.selectedScenario.title}"),
-                        backgroundColor: AppTheme.cyan,
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.analytics),
-                  label: const Text("Pokaż wykres logu"),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.cyan,
-                    foregroundColor: Colors.black,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    obd.connectSimulator(obd.selectedScenario);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Włączono symulator na żywo. Przejdź do zakładki 'Rejestrator' i kliknij START!"),
-                        backgroundColor: AppTheme.green,
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text("Symuluj na żywo"),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppTheme.green,
-                    side: const BorderSide(color: AppTheme.green),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  ),
-                ),
-              ),
-            ],
           ),
         ],
       ),

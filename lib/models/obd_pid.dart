@@ -19,10 +19,6 @@ class ObdPid {
   final double maxExpected;
   final double Function(List<int> bytes) decoder;
 
-  /// Parametr dostępny tylko w symulatorze (brak standardowego PID-u OBD-II).
-  /// Takie czujniki nigdy nie są wysyłane do prawdziwego sterownika.
-  final bool simulatorOnly;
-
   const ObdPid({
     required this.code,
     required this.shortName,
@@ -33,13 +29,34 @@ class ObdPid {
     required this.minExpected,
     required this.maxExpected,
     required this.decoder,
-    this.simulatorOnly = false,
   });
 
   /// Numer PID dla zapytań Mode 01 (np. 0x0C dla "010C"), null dla innych.
   int? get mode01Pid {
-    if (simulatorOnly || code.length != 4 || !code.startsWith("01")) return null;
+    if (code.length != 4 || !code.startsWith("01")) return null;
     return int.tryParse(code.substring(2), radix: 16);
+  }
+
+  /// Identyfikator monitora Mode 06 (np. 0xA2 dla "06A2"), null dla innych.
+  int? get mode06Mid {
+    if (code.length != 4 || !code.startsWith("06")) return null;
+    return int.tryParse(code.substring(2), radix: 16);
+  }
+
+  /// Licznik wypadania zapłonów z odpowiedzi Mode 06 (monitory $A2-$AD).
+  /// Dane zaczynają się od MID; każdy rekord ma 9 bajtów:
+  /// MID, TID, jednostka, wartość(2), min(2), max(2).
+  /// Preferowany TID $0C (bieżący cykl jazdy), w drugiej kolejności $0B (średnia z 10 cykli).
+  static double decodeMisfireCount(List<int> data) {
+    double? current;
+    double? average;
+    for (int i = 0; i + 9 <= data.length; i += 9) {
+      final tid = data[i + 1];
+      final value = ((data[i + 3] << 8) | data[i + 4]).toDouble();
+      if (tid == 0x0C) current = value;
+      if (tid == 0x0B) average = value;
+    }
+    return current ?? average ?? double.nan;
   }
 
   /// Standardowy katalog czujników OBD-II (Mode 01)
@@ -244,19 +261,6 @@ class ObdPid {
       },
     ),
     ObdPid(
-      code: "SIM_SOOT",
-      shortName: "DPF_SOOT",
-      name: "Zapełnienie sadzą DPF",
-      unit: "%",
-      category: PidCategory.exhaust,
-      colorValue: 0xFF6C757D, // Charcoal Grey
-      minExpected: 0,
-      maxExpected: 120,
-      decoder: (b) => b.isNotEmpty ? (b[0] * 100.0 / 255.0) : 0.0,
-      // Zapełnienie DPF sadzą nie ma standardowego PID-u OBD-II (tylko Mode 22 producenta)
-      simulatorOnly: true,
-    ),
-    ObdPid(
       code: "0178",
       shortName: "EGT",
       name: "Temperatura spalin (EGT)",
@@ -323,56 +327,52 @@ class ObdPid {
       decoder: (b) => b.isNotEmpty ? (b[0] / 200.0) : 0.0,
     ),
     ObdPid(
-      code: "SIM_MIS1",
+      code: "06A2",
       shortName: "MIS_1",
-      name: "Wypadanie Zapłonu Cyl 1",
+      name: "Wypadanie zapłonu cyl. 1 (licznik)",
       unit: "cnt",
-      category: PidCategory.engine,
-      colorValue: 0xFFFF5722, // Głęboki pomarańcz
+      category: PidCategory.ignition,
+      colorValue: 0xFFFF5722,
       minExpected: 0,
-      maxExpected: 0,
-      decoder: (b) => b.isNotEmpty ? b[0].toDouble() : 0.0,
-      // Liczniki wypadania zapłonów nie są dostępne w Mode 01 (tylko Mode 06 / Mode 22)
-      simulatorOnly: true,
+      maxExpected: 50,
+      // Mode 06, monitor $A2: licznik wypadania zapłonów w bieżącym cyklu jazdy
+      decoder: ObdPid.decodeMisfireCount,
     ),
     ObdPid(
-      code: "SIM_MIS2",
+      code: "06A3",
       shortName: "MIS_2",
-      name: "Wypadanie Zapłonu Cyl 2",
+      name: "Wypadanie zapłonu cyl. 2 (licznik)",
       unit: "cnt",
-      category: PidCategory.engine,
+      category: PidCategory.ignition,
       colorValue: 0xFFFF5722,
       minExpected: 0,
-      maxExpected: 0,
-      decoder: (b) => b.isNotEmpty ? b[0].toDouble() : 0.0,
-      // Liczniki wypadania zapłonów nie są dostępne w Mode 01 (tylko Mode 06 / Mode 22)
-      simulatorOnly: true,
+      maxExpected: 50,
+      // Mode 06, monitor $A3: licznik wypadania zapłonów w bieżącym cyklu jazdy
+      decoder: ObdPid.decodeMisfireCount,
     ),
     ObdPid(
-      code: "SIM_MIS3",
+      code: "06A4",
       shortName: "MIS_3",
-      name: "Wypadanie Zapłonu Cyl 3",
+      name: "Wypadanie zapłonu cyl. 3 (licznik)",
       unit: "cnt",
-      category: PidCategory.engine,
+      category: PidCategory.ignition,
       colorValue: 0xFFFF5722,
       minExpected: 0,
-      maxExpected: 0,
-      decoder: (b) => b.isNotEmpty ? b[0].toDouble() : 0.0,
-      // Liczniki wypadania zapłonów nie są dostępne w Mode 01 (tylko Mode 06 / Mode 22)
-      simulatorOnly: true,
+      maxExpected: 50,
+      // Mode 06, monitor $A4: licznik wypadania zapłonów w bieżącym cyklu jazdy
+      decoder: ObdPid.decodeMisfireCount,
     ),
     ObdPid(
-      code: "SIM_MIS4",
+      code: "06A5",
       shortName: "MIS_4",
-      name: "Wypadanie Zapłonu Cyl 4",
+      name: "Wypadanie zapłonu cyl. 4 (licznik)",
       unit: "cnt",
-      category: PidCategory.engine,
+      category: PidCategory.ignition,
       colorValue: 0xFFFF5722,
       minExpected: 0,
-      maxExpected: 0,
-      decoder: (b) => b.isNotEmpty ? b[0].toDouble() : 0.0,
-      // Liczniki wypadania zapłonów nie są dostępne w Mode 01 (tylko Mode 06 / Mode 22)
-      simulatorOnly: true,
+      maxExpected: 50,
+      // Mode 06, monitor $A5: licznik wypadania zapłonów w bieżącym cyklu jazdy
+      decoder: ObdPid.decodeMisfireCount,
     ),
   ];
 
@@ -425,8 +425,8 @@ class LoggingPreset {
     const LoggingPreset(
       id: "dpf_turbo_correlate",
       title: "Turbosprężarka vs DPF/GPF (Spaliny)",
-      description: "Analiza zależności braku mocy: Ciśnienie doładowania, różnica ciśnień DPF, masa sadzy i temperatura spalin EGT.",
-      pidShortNames: ["RPM", "BOOST", "MAF", "DPF_DP", "DPF_SOOT", "EGT", "TPS", "PEDAL", "EGR_CMD"],
+      description: "Analiza zależności braku mocy: Ciśnienie doładowania, różnica ciśnień DPF, temperatura spalin EGT i zawór EGR.",
+      pidShortNames: ["RPM", "BOOST", "MAF", "DPF_DP", "EGT", "TPS", "PEDAL", "EGR_CMD"],
     ),
     const LoggingPreset(
       id: "idle_evap_vvt",
@@ -437,14 +437,14 @@ class LoggingPreset {
     const LoggingPreset(
       id: "fuel_ignition",
       title: "Paliwo, Mieszanka i Zapłon",
-      description: "Cofanie zapłonu, skład mieszanki AFR, korekty krótko- i długoterminowe STFT/LTFT, ciśnienie na szynie.",
-      pidShortNames: ["RPM", "IGN", "AFR", "STFT", "LTFT", "F_RAIL", "TPS"],
+      description: "Cofanie zapłonu, skład mieszanki AFR, korekty STFT/LTFT, ciśnienie na szynie i liczniki wypadania zapłonów (Mode 06).",
+      pidShortNames: ["RPM", "IGN", "AFR", "STFT", "LTFT", "F_RAIL", "TPS", "MIS_1", "MIS_2", "MIS_3", "MIS_4"],
     ),
     const LoggingPreset(
       id: "all_sensors",
       title: "Wszystkie Obsługiwane Sensory",
       description: "Pełny log ze wszystkich czujników dostępnych w samochodzie.",
-      pidShortNames: ["RPM", "BOOST", "MAF", "IGN", "TPS", "PEDAL", "AFR", "O2_V", "STFT", "LTFT", "IAT", "ECT", "LOAD", "SPEED", "F_RAIL", "DPF_DP", "DPF_SOOT", "EGT", "EVAP_VP", "EGR_CMD", "EGR_ERR", "MIS_1", "MIS_2", "MIS_3", "MIS_4"],
+      pidShortNames: ["RPM", "BOOST", "MAF", "IGN", "TPS", "PEDAL", "AFR", "O2_V", "STFT", "LTFT", "IAT", "ECT", "LOAD", "SPEED", "F_RAIL", "DPF_DP", "EGT", "EVAP_VP", "EGR_CMD", "EGR_ERR", "MIS_1", "MIS_2", "MIS_3", "MIS_4"],
     ),
   ];
 }

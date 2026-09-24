@@ -209,14 +209,6 @@ class LoggerScreen extends StatelessWidget {
           "${v?.isDiesel == true ? ' (Diesel)' : ''}";
       color = AppTheme.green;
       icon = Icons.sensors;
-    } else if (obd.status == ObdConnectionStatus.simulated) {
-      text = "Tryb SYMULATORA — dane nie pochodzą z samochodu";
-      color = AppTheme.cyan;
-      icon = Icons.sports_motorsports;
-    } else if (logger.activeSession?.isDemo == true) {
-      text = "Wyświetlany jest przykładowy log DEMO (nie z Twojego auta)";
-      color = AppTheme.cyan;
-      icon = Icons.info_outline;
     } else {
       text = "Brak połączenia — połącz się z adapterem w zakładce „Połączenie”";
       color = AppTheme.textMuted;

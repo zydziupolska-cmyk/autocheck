@@ -154,4 +154,70 @@ void main() {
     expect(obd.status, ObdConnectionStatus.error);
     expect(obd.statusMessage, contains("Włącz zapłon"));
   });
+
+  group('inne samochody', () {
+    Future<(MockElm327, ObdService)> connectTo(MockBus bus, {bool petrol = false}) async {
+      final car = await MockElm327.start(bus: bus, petrol: petrol);
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      final ok = await service.connectWifi(ip: "127.0.0.1", port: car.port);
+      expect(ok, isTrue, reason: service.statusMessage);
+      return (car, service);
+    }
+
+    test('benzyna: korekty, zapłon i liczniki wypadania zapłonów z Mode 06', () async {
+      final (car, service) = await connectTo(MockBus.can11, petrol: true);
+      expect(service.vehicleInfo!.isDiesel, isFalse);
+      final keys = service.discoveredPids.map((p) => p.shortName).toSet();
+      expect(keys, containsAll(["IGN", "STFT", "LTFT", "MIS_1", "MIS_2", "MIS_3", "MIS_4"]));
+
+      ObdPid pid(String k) => service.discoveredPids.firstWhere((p) => p.shortName == k);
+      expect(await service.readPid(pid("IGN")), closeTo(11.0, 0.01));
+      expect(await service.readPid(pid("LTFT")), closeTo(3.9, 0.1));
+      expect(await service.readPid(pid("MIS_3")), 0);
+      car.misfireCyl3 = 12;
+      expect(await service.readPid(pid("MIS_3")), 12);
+      expect(await service.readPid(pid("MIS_1")), 0);
+    });
+
+    test('diesel nie ma liczników wypadania zapłonów (brak Mode 06 MID A2+)', () async {
+      final (_, service) = await connectTo(MockBus.can11);
+      expect(service.discoveredPids.map((p) => p.shortName), isNot(contains("MIS_1")));
+    });
+
+    test('CAN 29-bit: dwa sterowniki, adresowanie fizyczne, VIN i brak fikcyjnych kodów', () async {
+      final (car, service) = await connectTo(MockBus.can29);
+      expect(service.engineEcuAddress, "18DAF110");
+      expect(service.vehicleInfo!.vin, MockElm327.vin);
+      expect(service.vehicleInfo!.ecuName, "ECM-EngineControl");
+      expect(car.receivedCommands, containsAll(["ATCP18", "ATSHDA10F1"]));
+      expect(await service.readDtcCodes(), isEmpty);
+      expect(await service.readPid(ObdPid.getByShortName("RPM")!), closeTo(850, 0.01));
+    });
+
+    test('KWP2000: VIN z wielu linii, kody błędów bez licznika', () async {
+      final car = await MockElm327.start(bus: MockBus.kwp);
+      car.engineDtcs = [
+        [0x01, 0x33],
+        [0x04, 0x20],
+      ];
+      final service = ObdService();
+      addTearDown(() async {
+        service.disconnect();
+        await car.close();
+      });
+      expect(await service.connectWifi(ip: "127.0.0.1", port: car.port), isTrue, reason: service.statusMessage);
+
+      expect(service.engineEcuAddress, "10");
+      expect(service.vehicleInfo!.vin, MockElm327.vin);
+      final codes = (await service.readDtcCodes())!;
+      expect(codes.map((c) => c.code), ["P0133", "P0420"]);
+      expect(await service.readPid(ObdPid.getByShortName("RPM")!), closeTo(850, 0.01));
+      // Bez ISO-TP nie ma adresowania fizycznego ani skróconego oczekiwania
+      expect(car.receivedCommands.where((c) => c.startsWith("ATSH")), isEmpty);
+    });
+  });
 }
