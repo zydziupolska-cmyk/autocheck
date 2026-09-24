@@ -558,6 +558,7 @@ class MockElm327 {
       case 0x22:
         if (req.length >= 3) {
           final did = "${_hex(req[1])}${_hex(req[2])}";
+          if (did == "F190") return [0x62, 0xF1, 0x90, ...vin.codeUnits];
           final data = udsDids[did] ?? moduleCoding["7E0"]?[did];
           if (data != null) return [0x62, req[1], req[2], ...data];
         }

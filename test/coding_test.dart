@@ -82,4 +82,17 @@ void main() {
     expect(ok, isTrue, reason: "NRC $nrc");
     expect(String.fromCharCodes(elm.moduleCoding["714"]!["F187"]!), "3AA920999");
   });
+
+  test('uniwersalny odczyt identyfikacji sterownika silnika (dowolna marka)', () async {
+    elm.udsDids["F187"] = "8654321".codeUnits;   // numer części
+    elm.udsDids["F189"] = "0040".codeUnits;      // wersja oprogramowania
+    elm.udsDids["F197"] = "DME".codeUnits;       // nazwa systemu
+    final r = await obd.readEcuIdentification();
+    expect(r.responded, isTrue);
+    final vin = r.values.firstWhere((v) => v.did == IdentificationDids.vin);
+    expect(String.fromCharCodes(vin.bytes!), "WVGZZZ1TZFW011407");
+    final part = r.values.firstWhere((v) => v.did == IdentificationDids.vehicleManufacturerSparePart);
+    expect(String.fromCharCodes(part.bytes!), "8654321");
+    expect(part.label, "Numer części");
+  });
 }

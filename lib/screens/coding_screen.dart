@@ -66,15 +66,14 @@ class _CodingScreenState extends State<CodingScreen> {
     final obd = context.watch<ObdService>();
     return Scaffold(
       appBar: AppBar(title: const Text("Kodowanie i adaptacje")),
-      body: !obd.canScanVagModules
+      body: obd.status != ObdConnectionStatus.connected
           ? const Padding(
               padding: EdgeInsets.all(16),
-              child: Notice(
-                "Kodowanie odczytasz po połączeniu z autem VAG na magistrali CAN. Dla innych marek zestaw "
-                "identyfikatorów bywa inny — napisz, jaki masz samochód, dopiszę obsługę.",
-              ),
+              child: Notice("Połącz się z autem, żeby odczytać identyfikację i kodowanie sterowników."),
             )
-          : ListView(
+          : !obd.canScanVagModules
+              ? _universal(context, coding, obd)
+              : ListView(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
               children: [
                 const Notice(
@@ -136,6 +135,40 @@ class _CodingScreenState extends State<CodingScreen> {
                 _savedCard(context, coding),
               ],
             ),
+    );
+  }
+
+  /// Auta spoza VAG: uniwersalny odczyt identyfikacji sterownika silnika.
+  Widget _universal(BuildContext context, CodingService coding, ObdService obd) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+      children: [
+        const Notice(
+          "Dla tej marki mam na razie uniwersalny odczyt identyfikacji sterownika silnika (VIN, numery, "
+          "wersje oprogramowania). Pełne kodowanie modułów dopiszę z nagrania oryginalnego testera.",
+          icon: Icons.info_outline,
+        ),
+        const SizedBox(height: 12),
+        if (coding.progress != null)
+          Row(children: [
+            const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+            const SizedBox(width: 10),
+            Expanded(child: Text(coding.progress!, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13))),
+          ])
+        else
+          ElevatedButton.icon(
+            onPressed: coding.busy ? null : () async {
+              final r = await obd.readEcuIdentification();
+              if (context.mounted) setState(() => _readings = [r]);
+            },
+            icon: const Icon(Icons.download, size: 18),
+            label: const Text("Odczytaj identyfikację sterownika"),
+          ),
+        if (_readings != null) ...[
+          const SizedBox(height: 16),
+          for (final r in _readings!) _moduleCard(r),
+        ],
+      ],
     );
   }
 

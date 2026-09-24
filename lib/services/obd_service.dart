@@ -99,6 +99,7 @@ class ObdService extends ChangeNotifier {
   ObdBusType get busType => _bus;
   bool get isMonitoring => _monitoring;
   String? get engineEcuAddress => _engineEcu;
+  String? get engineRequestHeader => _engineHeader;
   Set<int> get supportedPidNumbers => _supportedPids;
 
   /// Katalog czujników bez duplikatów nazw (np. dwa warianty PEDAL).
@@ -1259,6 +1260,38 @@ class ObdService extends ChangeNotifier {
     });
   }
 
+  /// Uniwersalny odczyt identyfikacji sterownika (działa na każdej marce na CAN).
+  /// Czyta standardowe identyfikatory F1xx oraz dodatkowe [extra] (np. BMW SVK),
+  /// bez dostępu zabezpieczonego. [requestId]/[responseId] domyślnie = ECU silnika.
+  Future<ModuleCoding> readEcuIdentification({
+    String? requestId,
+    String? responseId,
+    String moduleName = "Sterownik silnika",
+    List<int> dids = IdentificationDids.standard,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    final req = requestId ?? _engineHeader;
+    final resp = responseId ?? _engineEcu;
+    if (req == null || resp == null || !_isCan) {
+      return ModuleCoding(VagModule(moduleName, "", req ?? "", resp ?? ""), responded: false, values: const []);
+    }
+    return _withModule(req, resp, () async {
+      await _udsRaw(resp, "1003");
+      final values = <DidValue>[];
+      bool responded = false;
+      for (int i = 0; i < dids.length; i++) {
+        if (!_hasTransport) break;
+        onProgress?.call(i, dids.length);
+        final v = await _readDid(resp, dids[i]);
+        if (v.bytes != null || v.nrc != null) responded = true;
+        if (v.bytes != null) values.add(v);
+      }
+      onProgress?.call(dids.length, dids.length);
+      await _udsRaw(resp, "1001");
+      return ModuleCoding(VagModule(moduleName, "", req, resp), responded: responded, values: values);
+    });
+  }
+
   /// Zapisuje wartość identyfikatora (usługa 2E) — używane do przywrócenia kopii.
   /// Wiele modułów wymaga do zapisu dostępu zabezpieczonego; wtedy zwracamy kod
   /// odmowy (np. 0x33), a niczego nie wymuszamy. Zwraca (sukces, kod NRC lub null).
@@ -1469,7 +1502,7 @@ class DidValue {
   String get didHex => did.toRadixString(16).padLeft(4, '0').toUpperCase();
   String get hex => bytes == null ? "" : bytes!.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
   bool get readable => bytes != null;
-  String get label => CodingDids.names[did] ?? "DID $didHex";
+  String get label => CodingDids.names[did] ?? IdentificationDids.names[did] ?? "DID $didHex";
 }
 
 /// Odczytane kodowanie/adaptacje jednego modułu.
@@ -1519,4 +1552,55 @@ class CodingDids {
 
   /// DID, które są tekstem ASCII (do czytelnego wyświetlenia).
   static const Set<int> textual = {vin, partNumberVag, hwNumber, swVersion, systemName, asamData};
+}
+
+/// Standardowe identyfikatory odczytu (UDS 22) niezależne od marki, plus kilka
+/// znanych dla BMW (za dokumentacją UDS BMW). Sam odczyt, bez dostępu zabezpieczonego.
+class IdentificationDids {
+  // Standard ISO 14229 / 27145 (F1xx)
+  static const int vin = 0xF190;
+  static const int vehicleManufacturerEcuSw = 0xF188;
+  static const int systemSupplierEcuHw = 0xF191;
+  static const int systemSupplierEcuSw = 0xF189;
+  static const int ecuSerialNumber = 0xF18C;
+  static const int vehicleManufacturerSparePart = 0xF187;
+  static const int systemName = 0xF197;
+  static const int repairShopCode = 0xF198;
+  static const int calibrationId = 0xF186; // aktywna sesja/CALID zależnie od ECU
+  // BMW (z dokumentacji UDS BMW)
+  static const int bmwActiveSession = 0xF100;
+  static const int bmwCurrentSvk = 0xF101;   // readCurrentSVK
+  static const int bmwManufacturingData = 0xF18B;
+  static const int bmwSerialNumber = 0xF18C;
+  static const int bmwSgbdIndex = 0xF150;
+
+  static const List<int> standard = [
+    vin, vehicleManufacturerSparePart, systemSupplierEcuHw, systemSupplierEcuSw,
+    vehicleManufacturerEcuSw, ecuSerialNumber, systemName,
+  ];
+
+  /// Zestaw rozszerzony dla BMW (identyfikacja i wersje oprogramowania).
+  static const List<int> bmw = [
+    vin, bmwCurrentSvk, bmwManufacturingData, bmwSerialNumber, bmwSgbdIndex, systemName,
+  ];
+
+  static const Map<int, String> names = {
+    vin: "VIN",
+    vehicleManufacturerSparePart: "Numer części",
+    systemSupplierEcuHw: "Numer sprzętu",
+    systemSupplierEcuSw: "Wersja oprogramowania",
+    vehicleManufacturerEcuSw: "Wersja oprogramowania (producent)",
+    ecuSerialNumber: "Numer seryjny sterownika",
+    systemName: "Nazwa systemu",
+    repairShopCode: "Kod warsztatu",
+    calibrationId: "Identyfikator kalibracji",
+    bmwCurrentSvk: "SVK (wersje oprogramowania)",
+    bmwManufacturingData: "Dane produkcyjne",
+    bmwSgbdIndex: "Indeks SGBD",
+  };
+
+  static const Set<int> textual = {
+    vin, vehicleManufacturerSparePart, systemSupplierEcuHw, systemSupplierEcuSw,
+    vehicleManufacturerEcuSw, ecuSerialNumber, systemName, repairShopCode,
+  };
 }
