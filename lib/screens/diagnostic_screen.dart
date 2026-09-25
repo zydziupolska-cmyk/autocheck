@@ -13,6 +13,7 @@ import '../widgets/ui.dart';
 import '../models/engine_profiles.dart';
 import '../models/engine_specs.dart';
 import '../services/engine_memory.dart';
+import '../services/fault_notes.dart';
 
 class DiagnosticScreen extends StatelessWidget {
   final void Function(int tabIndex)? onNavigateToTab;
@@ -116,7 +117,8 @@ class DiagnosticScreen extends StatelessWidget {
       BuildContext context, LogSession session, List<Anomaly> anomalies) async {
     final messenger = ScaffoldMessenger.of(context);
     final engine = context.read<EngineMemory>().resolveFor(session.vin, session.engineInfo);
-    final report = DiagnosisReport(session: session, anomalies: anomalies, engine: engine);
+    final userFaults = engine != null ? context.read<FaultNotes>().notesFor(engine.profile.code) : const <UserFault>[];
+    final report = DiagnosisReport(session: session, anomalies: anomalies, engine: engine, userFaults: userFaults);
     try {
       final dir = await getTemporaryDirectory();
       final stamp = DateTime.now().millisecondsSinceEpoch;
@@ -404,6 +406,9 @@ class _EngineCard extends StatelessWidget {
     final match = memory.resolveFor(vin, engineInfo);
     final canRemember = vin.length >= 11;
     final spec = EngineSpecs.findInText(engineInfo);
+    final faultNotes = context.watch<FaultNotes>();
+    final code = match?.profile.code;
+    final myFaults = code != null ? faultNotes.notesFor(code) : const <UserFault>[];
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -469,6 +474,57 @@ class _EngineCard extends StatelessWidget {
                 ),
               const SizedBox(height: 4),
             ],
+            if (code != null) ...[
+              const Divider(height: 20),
+              Row(
+                children: [
+                  const Expanded(child: SectionLabel("Twoje notatki usterek (warsztat)")),
+                  TextButton.icon(
+                    onPressed: () => _addFault(context, faultNotes, code, match!.profile.name),
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text("Dodaj"),
+                    style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
+                  ),
+                ],
+              ),
+              if (myFaults.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 6),
+                  child: Text("Brak. Dopisz własne obserwacje — zbudujesz prywatną bazę usterek Dynomic.",
+                      style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+                )
+              else
+                for (final f in myFaults)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text("• ${f.title}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                              if (f.note.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 12, top: 1),
+                                  child: Text(f.note, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5, height: 1.35)),
+                                ),
+                            ],
+                          ),
+                        ),
+                        InkWell(
+                          onTap: () => faultNotes.remove(code, f.id),
+                          child: const Padding(
+                            padding: EdgeInsets.all(4),
+                            child: Icon(Icons.close, size: 16, color: AppTheme.textMuted),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              const SizedBox(height: 4),
+            ],
             Row(
               children: [
                 Expanded(
@@ -501,6 +557,41 @@ class _EngineCard extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _addFault(BuildContext context, FaultNotes notes, String code, String engineName) async {
+    final titleCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text("Nowa usterka — $engineName", style: const TextStyle(fontSize: 16)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: titleCtrl,
+              autofocus: true,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(labelText: "Usterka (krótko)", hintText: "np. Rozciągnięty łańcuch rozrządu"),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: noteCtrl,
+              textCapitalization: TextCapitalization.sentences,
+              minLines: 2,
+              maxLines: 4,
+              decoration: const InputDecoration(labelText: "Notatka (objawy, przebieg, naprawa)", hintText: "np. Stukanie na zimnym, błąd korelacji wałków przy ~180 tys. km"),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("Anuluj")),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("Zapisz")),
+        ],
+      ),
+    );
+    if (ok == true) await notes.add(code, titleCtrl.text, noteCtrl.text);
   }
 
   Future<void> _pick(BuildContext context, EngineMemory memory) async {

@@ -10,6 +10,7 @@ import 'services/pid_definitions_store.dart';
 import 'services/sniff_service.dart';
 import 'services/coding_service.dart';
 import 'services/engine_memory.dart';
+import 'services/fault_notes.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -28,6 +29,7 @@ Future<void> main() async {
 
   final obdService = ObdService();
   final engineMemory = EngineMemory();
+  final faultNotes = FaultNotes();
   final dataloggerService = DataloggerService(obdService: obdService, engineMemory: engineMemory);
   final definitionsStore = PidDefinitionsStore(obd: obdService);
   final sniffService = SniffService(obd: obdService);
@@ -42,6 +44,7 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: sniffService),
         ChangeNotifierProvider.value(value: codingService),
         ChangeNotifierProvider.value(value: engineMemory),
+        ChangeNotifierProvider.value(value: faultNotes),
       ],
       child: const DynomicDiagApp(),
     ),

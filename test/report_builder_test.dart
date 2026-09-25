@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:autocheck/models/anomaly.dart';
 import 'package:autocheck/models/engine_profiles.dart';
 import 'package:autocheck/models/log_point.dart';
+import 'package:autocheck/services/fault_notes.dart';
 import 'package:autocheck/services/report_builder.dart';
 
 LogSession _session() => LogSession(
@@ -68,6 +69,17 @@ void main() {
       expect(h, contains("Spadek doładowania pod obciążeniem"));
       // brak surowych nawiasów z danych wejściowych w treści usterki
       expect(h, isNot(contains("<script")));
+    });
+
+    test("uwagi warsztatu trafiają do raportu (tekst i HTML)", () {
+      final faults = [
+        UserFault(id: "1", title: "Łańcuch rozrządu", note: "rozciąga się ~150 tys.", added: DateTime(2026)),
+      ];
+      final r = DiagnosisReport(session: _session(), anomalies: const [], userFaults: faults);
+      expect(r.toPlainText(), contains("UWAGI WARSZTATU"));
+      expect(r.toPlainText(), contains("Łańcuch rozrządu"));
+      expect(r.toHtml(), contains("Uwagi warsztatu"));
+      expect(r.toHtml(), contains("rozciąga się"));
     });
 
     test("bez usterek daje pozytywny werdykt", () {

@@ -2,6 +2,7 @@ import '../models/anomaly.dart';
 import '../models/engine_profiles.dart';
 import '../models/engine_specs.dart';
 import '../models/log_point.dart';
+import 'fault_notes.dart';
 
 /// Raport z diagnozy dla klienta warsztatu.
 ///
@@ -14,6 +15,7 @@ class DiagnosisReport {
   final List<Anomaly> anomalies;
   final EngineMatch? engine;
   final EngineSpec? spec;
+  final List<UserFault> userFaults;
   final String workshopName;
   final DateTime generatedAt;
 
@@ -22,6 +24,7 @@ class DiagnosisReport {
     required this.anomalies,
     this.engine,
     EngineSpec? spec,
+    this.userFaults = const [],
     this.workshopName = "Dynomic",
     DateTime? generatedAt,
   })  : spec = spec ?? EngineSpecs.byCode(session.engineCode) ?? EngineSpecs.findInText(session.engineInfo),
@@ -94,6 +97,13 @@ class DiagnosisReport {
       b.writeln("ZNANE SŁABOŚCI SILNIKA ${engine!.profile.name} (ogólne)");
       for (final f in engine!.profile.faults) {
         b.writeln("  • ${f.title} — ${f.note}");
+      }
+      b.writeln();
+    }
+    if (userFaults.isNotEmpty) {
+      b.writeln("UWAGI WARSZTATU");
+      for (final f in userFaults) {
+        b.writeln("  • ${f.title}${f.note.isNotEmpty ? ' — ${f.note}' : ''}");
       }
       b.writeln();
     }
@@ -198,6 +208,14 @@ class DiagnosisReport {
       b.writeln('<h2>Znane słabości silnika ${_esc(engine!.profile.name)} (ogólne)</h2>');
       for (final f in engine!.profile.faults) {
         b.writeln('<div class="weak"><b>${_esc(f.title)}</b> — ${_esc(f.note)}</div>');
+      }
+    }
+
+    if (userFaults.isNotEmpty) {
+      b.writeln('<h2>Uwagi warsztatu</h2>');
+      for (final f in userFaults) {
+        final note = f.note.isNotEmpty ? ' — ${_esc(f.note)}' : '';
+        b.writeln('<div class="weak"><b>${_esc(f.title)}</b>$note</div>');
       }
     }
 
