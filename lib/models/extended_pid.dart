@@ -102,9 +102,57 @@ class ExtendedPid extends ObdPid {
     "RAILACT": ("F_RAIL", "Ciśnienie na szynie (UDS)", UdsValueKind.railPressure),
     "RAILTGT": ("RAIL_TGT", "Ciśnienie na szynie — zadane (UDS)", UdsValueKind.railPressure),
     "EGT1": ("EGT", "Temperatura spalin (UDS)", UdsValueKind.raw),
-    "DPFSOOT": ("DPF_SOOT_G", "Masa sadzy w DPF (UDS)", UdsValueKind.raw),
+    "DPFSOOT": ("DPF_SOOT", "Masa sadzy w DPF (UDS)", UdsValueKind.raw),
     "TRANSTEMP": ("GEAR_OIL_T", "Temperatura oleju skrzyni (UDS)", UdsValueKind.raw),
+
+    // Aliasy diagnostyki diesla — dla tabel producenta, importu (CSV Torque)
+    // i kanałów nauczonych z magistrali („Nauka od testera”). Dzięki temu dane
+    // z różnych źródeł trafiają do tych samych kanałów, których używa analizator.
+    // DPF — różnica ciśnień (analizator liczy z niej zatkanie filtra)
+    "DPFDP": ("DPF_DP", "Różnica ciśnień na DPF (UDS)", UdsValueKind.raw),
+    "DPFDIFFP": ("DPF_DP", "Różnica ciśnień na DPF (UDS)", UdsValueKind.raw),
+    "DPFDIFF": ("DPF_DP", "Różnica ciśnień na DPF (UDS)", UdsValueKind.raw),
+    "DPFPRESS": ("DPF_DP", "Różnica ciśnień na DPF (UDS)", UdsValueKind.raw),
+    "PDPF": ("DPF_DP", "Różnica ciśnień na DPF (UDS)", UdsValueKind.raw),
+    "SOOTP": ("DPF_DP", "Różnica ciśnień na DPF (UDS)", UdsValueKind.raw),
+    // DPF — masa/ładunek sadzy
+    "DPFSOOTMASS": ("DPF_SOOT", "Masa sadzy w DPF (UDS)", UdsValueKind.raw),
+    "SOOTMASS": ("DPF_SOOT", "Masa sadzy w DPF (UDS)", UdsValueKind.raw),
+    "DPFLOAD": ("DPF_SOOT", "Ładunek sadzy w DPF (UDS)", UdsValueKind.raw),
+    "PMLOAD": ("DPF_SOOT", "Ładunek sadzy w DPF (UDS)", UdsValueKind.raw),
+    // Temperatura spalin
+    "EGT": ("EGT", "Temperatura spalin (UDS)", UdsValueKind.raw),
+    "EGTB1": ("EGT", "Temperatura spalin (UDS)", UdsValueKind.raw),
+    "EXHTEMP": ("EGT", "Temperatura spalin (UDS)", UdsValueKind.raw),
+    "TABG": ("EGT", "Temperatura spalin (UDS)", UdsValueKind.raw),
+    // EGR — zadane / rzeczywiste
+    "EGRCMD": ("EGR_CMD", "EGR — zadane (UDS)", UdsValueKind.raw),
+    "EGRDES": ("EGR_CMD", "EGR — zadane (UDS)", UdsValueKind.raw),
+    "EGRSET": ("EGR_CMD", "EGR — zadane (UDS)", UdsValueKind.raw),
+    "EGRACT": ("EGR_ACT", "EGR — rzeczywiste (UDS)", UdsValueKind.raw),
+    "EGRPOS": ("EGR_ACT", "EGR — rzeczywiste (UDS)", UdsValueKind.raw),
+    "EGRFB": ("EGR_ACT", "EGR — rzeczywiste (UDS)", UdsValueKind.raw),
+    // Temperatura oleju silnika
+    "OILTEMP": ("OIL_T", "Temperatura oleju (UDS)", UdsValueKind.raw),
+    "TOIL": ("OIL_T", "Temperatura oleju (UDS)", UdsValueKind.raw),
+    "OILT": ("OIL_T", "Temperatura oleju (UDS)", UdsValueKind.raw),
+    // Masowy przepływ powietrza
+    "AIRMASS": ("MAF", "Przepływ powietrza (UDS)", UdsValueKind.raw),
+    "MAFACT": ("MAF", "Przepływ powietrza (UDS)", UdsValueKind.raw),
+    "MASSAIR": ("MAF", "Przepływ powietrza (UDS)", UdsValueKind.raw),
+    "MLHFM": ("MAF", "Przepływ powietrza (UDS)", UdsValueKind.raw),
+    // Geometria turbiny (VGT/VNT) — analizator porównuje zadane z rzeczywistym
+    "VGTCMD": ("VGT_CMD", "Geometria turbiny — zadane (UDS)", UdsValueKind.raw),
+    "VNTCMD": ("VGT_CMD", "Geometria turbiny — zadane (UDS)", UdsValueKind.raw),
+    "VGTACT": ("VGT_ACT", "Geometria turbiny — rzeczywiste (UDS)", UdsValueKind.raw),
+    "VNTACT": ("VGT_ACT", "Geometria turbiny — rzeczywiste (UDS)", UdsValueKind.raw),
   };
+
+  /// Kanoniczna nazwa kanału dla nazwy z tabeli producenta / importu CSV /
+  /// nauki z magistrali (lub ta sama nazwa, gdy nie ma mapowania). Dzięki temu
+  /// różne źródła danych trafiają do tych samych kanałów, których używa analizator.
+  static String canonicalKeyFor(String shortName) =>
+      _canonical[shortName.toUpperCase()]?.$1 ?? shortName;
 
   /// Kanały producenta z nazwami rozumianymi przez analizator.
   static List<ExtendedPid> channelsFor(VehicleProfile profile) {

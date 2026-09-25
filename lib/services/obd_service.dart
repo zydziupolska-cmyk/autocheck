@@ -877,6 +877,36 @@ class ObdService extends ChangeNotifier {
         return v >= -30 && v <= 70;
       case "EGT":
         return v >= -40 && v <= 1200;
+      // Kanały diagnostyczne diesla — ciasne zakresy chronią analizator przed
+      // błędnym DID-em, który zwraca „poprawne”, ale niewłaściwe dane.
+      case "DPF_DP":
+      case "EXH_P":
+        return v >= -5 && v <= 130; // kPa
+      case "DPF_SOOT":
+      case "DPF_SOOT_G":
+        return v >= 0 && v <= 200; // g
+      case "DPF_T":
+        return v >= -40 && v <= 1000; // °C
+      case "EGR_CMD":
+      case "EGR_ACT":
+      case "EGR_ERR":
+      case "VGT_CMD":
+      case "VGT_ACT":
+      case "WG_CMD":
+      case "WG_ACT":
+        return v >= -25 && v <= 110; // %
+      case "OIL_T":
+      case "GEAR_OIL_T":
+        return v >= -40 && v <= 200; // °C
+      case "MAF":
+        return v >= 0 && v <= 1200; // g/s
+      case "TQ_NM":
+        return v >= -200 && v <= 1500; // Nm
+      case "KNOCK_1":
+      case "KNOCK_2":
+      case "KNOCK_3":
+      case "KNOCK_4":
+        return v >= -30 && v <= 30; // ° korekty
       default:
         return v.abs() < 1e6;
     }

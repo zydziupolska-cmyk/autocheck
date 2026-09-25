@@ -1,9 +1,13 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import '../services/analysis/drive_analyzer.dart';
 import '../models/log_point.dart';
 import '../models/anomaly.dart';
 import '../services/datalogger_service.dart';
+import '../services/report_builder.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui.dart';
 import '../models/engine_profiles.dart';
@@ -70,6 +74,15 @@ class DiagnosticScreen extends StatelessWidget {
           else ...[
             _sessionSummary(session),
             const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => _shareCustomerReport(context, session, anomalies),
+                icon: const Icon(Icons.description_outlined, size: 18),
+                label: const Text("Raport dla klienta"),
+              ),
+            ),
+            const SizedBox(height: 12),
             _EngineCard(vin: session.vin, engineInfo: session.engineInfo),
             if (anomalies.isEmpty)
               const Notice(
@@ -96,6 +109,29 @@ class DiagnosticScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _shareCustomerReport(
+      BuildContext context, LogSession session, List<Anomaly> anomalies) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final engine = context.read<EngineMemory>().resolveFor(session.vin, session.engineInfo);
+    final report = DiagnosisReport(session: session, anomalies: anomalies, engine: engine);
+    try {
+      final dir = await getTemporaryDirectory();
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final html = File("${dir.path}/dynomic_raport_$stamp.html");
+      await html.writeAsString(report.toHtml());
+      final txt = File("${dir.path}/dynomic_raport_$stamp.txt");
+      await txt.writeAsString(report.toPlainText());
+      await SharePlus.instance.share(ShareParams(
+        files: [XFile(html.path), XFile(txt.path)],
+        text: "Raport diagnostyczny Dynomic Diag",
+      ));
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text("Nie udało się przygotować raportu: $e"), backgroundColor: AppTheme.fault),
+      );
+    }
   }
 
   Widget _sessionSummary(LogSession session) {
