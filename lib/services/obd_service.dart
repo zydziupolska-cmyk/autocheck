@@ -77,6 +77,25 @@ class ObdService extends ChangeNotifier {
   String? _stpxReply; // surowa odpowiedź na test STPX (do informacji o adapterze)
   double? _mapScale; // skala PID 0B z PID 4F (kPa na bit), gdy ECU podaje zakres MAP > 255 kPa
   final Map<String, String> _adapterInfo = {};
+
+  // --- Dziennik komunikacji (do raportu diagnostycznego) ---
+  final List<String> _log = [];
+  static const int _logMax = 2000;
+  bool logComms = true; // loguj surową wymianę komend (do wysłania raportu)
+  DateTime? _logStart;
+
+  void _logLine(String s) {
+    _logStart ??= DateTime.now();
+    final ms = DateTime.now().difference(_logStart!).inMilliseconds;
+    _log.add("${(ms / 1000).toStringAsFixed(2).padLeft(7)}  $s");
+    if (_log.length > _logMax) _log.removeRange(0, _log.length - _logMax);
+  }
+
+  /// Zdarzenie inicjalizacji/decyzja aplikacji (widoczne w raporcie).
+  void logEvent(String s) => _logLine("• $s");
+
+  /// Dziennik komunikacji jako tekst (do podglądu/wysłania).
+  List<String> get commsLog => List.unmodifiable(_log);
   int _multiPidFailures = 0;
   Set<int> _supportedPids = {};
   Set<int> _supportedMode06 = {};
@@ -350,6 +369,8 @@ class ObdService extends ChangeNotifier {
       _baroKpa = null;
       _adapterId = "";
       _protocolName = "";
+      _log.clear();
+      _logStart = null;
     } finally {
       _closing = false;
     }
@@ -424,12 +445,16 @@ class ObdService extends ChangeNotifier {
       _rx.clear();
       final completer = Completer<String>();
       _pendingResponse = completer;
+      if (logComms) _logLine(">> $cmd");
       await _write(cmd);
       final response = await completer.future.timeout(timeout);
-      return _stripEcho(response, cmd);
+      final stripped = _stripEcho(response, cmd);
+      if (logComms) _logLine("<< ${stripped.replaceAll(RegExp(r'[\r\n]+'), ' | ').trim()}");
+      return stripped;
     } on TimeoutException {
       _pendingResponse = null;
       _needsDrain = true;
+      if (logComms) _logLine("<< [brak odpowiedzi / timeout]");
       if (kDebugMode) debugPrint("OBD timeout: $cmd");
       return "";
     } catch (e) {
@@ -598,6 +623,7 @@ class ObdService extends ChangeNotifier {
     _engineEcu = engine.ecu == "?" ? null : engine.ecu;
     _engineHeader = _engineEcu != null ? _requestHeaderFor(_engineEcu!, _bus) : null;
     _activeHeader = null;
+    logEvent("Protokół: $_protocolName (nr $_protocolNumber); ECU silnika: ${_engineEcu ?? '—'}");
 
     _updateStatus(ObdConnectionStatus.initializing, "Skanowanie obsługiwanych czujników...");
     final supported = ElmParser.decodeSupportedPids(engine.data);
@@ -697,6 +723,11 @@ class ObdService extends ChangeNotifier {
       if (src == null) continue;
       final origin = src is ExtendedPid ? "${src.canHeader ?? ''} ${src.requestCommand} (${src.source})".trim() : "OBD ${src.code}";
       _adapterInfo["Źródło $key"] = origin + (src.code == "010B" && _mapScale != null ? " ×${_mapScale!.toStringAsFixed(3)} (PID 4F)" : "");
+    }
+
+    logEvent("Parametry: ${_discoveredPids.length}; STPX: $_stpxSupported; multi-PID: $_multiPidSupported; PID Mode01: ${_supportedPids.length}");
+    if (_vehicleInfo != null) {
+      logEvent("Pojazd: ${_vehicleInfo!.manufacturer} ${_vehicleInfo!.modelName} • VIN ${_vehicleInfo!.vin} • CALID ${_vehicleInfo!.calibrationId}");
     }
 
     if (!_hasTransport) return false;
@@ -1008,6 +1039,35 @@ class ObdService extends ChangeNotifier {
 
   /// Szczegóły adaptera i wykrytych możliwości (do ekranu informacji i zgłoszeń problemów).
   Map<String, String> get adapterInfo => Map.unmodifiable(_adapterInfo);
+
+  /// Pełny raport diagnostyczny: adapter, pojazd, wykryte kanały i dziennik
+  /// komunikacji. Do wysłania, gdy coś nie działa na konkretnym aucie.
+  String buildDiagnosticReport() {
+    final b = StringBuffer();
+    b.writeln("=== Dynomic Diag — raport diagnostyczny ===");
+    b.writeln("Czas: ${DateTime.now().toIso8601String()}");
+    b.writeln("Status: $_statusMessage");
+    b.writeln();
+    b.writeln("--- Adapter i możliwości ---");
+    _adapterInfo.forEach((k, v) => b.writeln("$k: $v"));
+    final v = _vehicleInfo;
+    if (v != null) {
+      b.writeln();
+      b.writeln("--- Pojazd ---");
+      b.writeln("Marka/model: ${v.manufacturer} ${v.modelName} (${v.year})");
+      b.writeln("VIN: ${v.vin}");
+      b.writeln("Silnik: ${v.engineDescription}");
+      b.writeln("Sterownik: ${v.ecuName} • CALID ${v.calibrationId}");
+      b.writeln("Paliwo: ${v.fuelType.label} • protokół ${v.obdProtocol}");
+    }
+    b.writeln();
+    b.writeln("--- Wykryte parametry (${_discoveredPids.length}) ---");
+    b.writeln(_discoveredPids.map((p) => p.shortName).join(", "));
+    b.writeln();
+    b.writeln("--- Dziennik komunikacji (${_log.length}) ---");
+    b.writeln(_log.join("\n"));
+    return b.toString();
+  }
 
   Future<void> _applyFormatting() async {
     await _sendCommand("ATL0"); // bez dodatkowych LF

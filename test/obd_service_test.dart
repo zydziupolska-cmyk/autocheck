@@ -449,4 +449,15 @@ void main() {
       expect(logger.isPresetApplied(LoggingPreset.presets[1]), isFalse);
     }
   });
+
+  test('raport diagnostyczny zawiera adapter, pojazd i dziennik komunikacji', () async {
+    await connect();
+    final report = obd.buildDiagnosticReport();
+    expect(report, contains("raport diagnostyczny"));
+    expect(report, contains("VIN: ${MockElm327.vin}"));
+    expect(report, contains("Dziennik komunikacji"));
+    expect(report, contains(">> 0100"));   // widać wysłane komendy
+    expect(report, contains("Protokół"));   // widać zdarzenie inicjalizacji
+    expect(obd.commsLog, isNotEmpty);
+  });
 }

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'dart:io';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -138,10 +141,29 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
             },
             child: const Text("Kopiuj"),
           ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _shareReport(obd);
+            },
+            child: const Text("Wyślij raport"),
+          ),
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Zamknij")),
         ],
       ),
     );
+  }
+
+  Future<void> _shareReport(ObdService obd) async {
+    final report = obd.buildDiagnosticReport();
+    try {
+      final dir = await getTemporaryDirectory();
+      final file = File("${dir.path}/dynomic_raport_${DateTime.now().millisecondsSinceEpoch}.txt");
+      await file.writeAsString(report);
+      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], text: "Raport diagnostyczny Dynomic Diag"));
+    } catch (e) {
+      if (mounted) _showSnack("Nie udało się przygotować raportu: $e", AppTheme.fault);
+    }
   }
 
   Future<void> _scanVagModules(ObdService obd) async {
