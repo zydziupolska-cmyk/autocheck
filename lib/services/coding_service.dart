@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../models/vag_modules.dart';
+import '../models/uds_nrc.dart';
 import 'obd_service.dart';
 
 /// Kopia zapasowa kodowania i adaptacji jednego modułu — zapisana wartość DID.
@@ -215,22 +216,6 @@ class RestoreResult {
   final int? nrc;
   const RestoreResult(this.moduleName, this.label, this.ok, this.nrc);
 
-  /// Czytelny powód niepowodzenia na podstawie kodu odmowy UDS.
-  String get reason {
-    if (ok) return "zapisano";
-    switch (nrc) {
-      case 0x33:
-        return "wymaga dostępu zabezpieczonego (Security Access) — nie da się przywrócić samą aplikacją";
-      case 0x31:
-        return "sterownik odrzucił wartość (poza zakresem)";
-      case 0x22:
-        return "warunki niespełnione (np. silnik pracuje albo zła sesja)";
-      case 0x7F:
-        return "usługa nieobsługiwana w tej sesji";
-      case null:
-        return "brak odpowiedzi modułu";
-      default:
-        return "odmowa 0x${nrc!.toRadixString(16).padLeft(2, '0').toUpperCase()}";
-    }
-  }
+  /// Czytelny powód niepowodzenia na podstawie kodu odmowy UDS (pełna tablica NRC).
+  String get reason => ok ? "zapisano" : UdsNrc.describePl(nrc);
 }

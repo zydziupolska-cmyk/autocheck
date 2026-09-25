@@ -3,6 +3,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/vag_modules.dart';
+import '../models/uds_nrc.dart';
 import '../services/coding_service.dart';
 import '../services/obd_service.dart';
 import '../theme/app_theme.dart';
@@ -196,7 +197,7 @@ class _CodingScreenState extends State<CodingScreen> {
                   const SizedBox(height: 2),
                   if (!v.readable)
                     Text(
-                      v.nrc == 0x33 ? "chronione — do odczytu potrzebny dostęp zabezpieczony" : "brak odczytu",
+                      v.nrc == null ? "brak odczytu" : UdsNrc.describePl(v.nrc),
                       style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
                     )
                   else

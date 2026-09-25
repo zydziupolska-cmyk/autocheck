@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/sniff_recording.dart';
 import '../services/analysis/sniff_analyzer.dart';
+import '../services/analysis/did_correlator.dart';
 import '../services/obd_service.dart';
 import '../services/pid_definitions_store.dart';
 import '../services/sniff_service.dart';
@@ -35,6 +36,7 @@ class LearningScreen extends StatelessWidget {
           if (analysis != null) ...[
             const SizedBox(height: 16),
             _AnalysisHeader(analysis: analysis),
+            _AutoMapCard(analysis: analysis),
             for (final ecu in analysis.ecus.values) _EcuTile(ecu: ecu),
           ],
         ],
@@ -275,6 +277,76 @@ class _AnalysisHeader extends StatelessWidget {
                     "Zmieniające się są na górze — porównaj je z ekranem testera.",
             style: const TextStyle(color: AppTheme.textSecondary, fontSize: 13),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Automatyczne rozpoznanie nieznanych DID-ów przez korelację ze znanymi kanałami
+/// (RPM, prędkość, MAP…) odczytanymi w tej samej sesji. Idea za pracą TUMFTM.
+class _AutoMapCard extends StatelessWidget {
+  final SniffAnalysis analysis;
+  const _AutoMapCard({required this.analysis});
+
+  @override
+  Widget build(BuildContext context) {
+    final guesses = DidCorrelator.analyze(analysis.allParams);
+    if (guesses.isEmpty) return const SizedBox.shrink();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: _card(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.auto_awesome, size: 16, color: AppTheme.accent),
+              const SizedBox(width: 6),
+              const Expanded(
+                child: Text("Automatycznie rozpoznane kanały",
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              ),
+              Text("${guesses.length}", style: const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+            ],
+          ),
+          const SizedBox(height: 2),
+          const Text(
+            "Nieznane DID-y, których przebieg pasuje do znanego sygnału. Sprawdź i zapisz do biblioteki.",
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+          ),
+          const SizedBox(height: 8),
+          for (final g in guesses.take(12))
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppTheme.accent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text("${g.confidencePct}%",
+                        style: const TextStyle(color: AppTheme.accent, fontSize: 11, fontWeight: FontWeight.w700)),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text("${g.param.title} → ${g.canonicalKey}",
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                        Text("wzór: ${g.equation}  •  wg: ${g.referenceTitle}",
+                            style: const TextStyle(color: AppTheme.textMuted, fontSize: 11.5)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
         ],
       ),
     );
