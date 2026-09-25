@@ -85,6 +85,27 @@ void main() {
     expect(obd.discoveredPids.firstWhere((p) => p.shortName == "PEDAL").code, "0149");
   });
 
+  test('PID diesla ukryty w masce (jak VAG) i tak jest wykrywany przez próbę', () async {
+    // Sterownik odpowiada na 017A (różnica ciśnień DPF), ale nie zgłasza go
+    // w masce wsparcia — tak jak część diesli VAG. Force-probe musi go znaleźć.
+    elm.hiddenPids = {0x7A};
+    elm.dpfDpKpa = 3.5;
+    await connect();
+    final keys = obd.discoveredPids.map((p) => p.shortName).toSet();
+    expect(keys, contains("DPF_DP"));
+    final dpf = obd.discoveredPids.firstWhere((p) => p.shortName == "DPF_DP");
+    expect(await obd.readPid(dpf), closeTo(3.5, 0.001));
+  });
+
+  test('force-probe nie dodaje kanału, gdy sterownik nie odpowiada', () async {
+    // 017A poza maską i BEZ odpowiedzi (nie ukryty, po prostu nieobsługiwany
+    // po usunięciu z listy) — kanał nie może się pojawić.
+    elm.unsupportedPids = {0x7A};
+    await connect();
+    final keys = obd.discoveredPids.map((p) => p.shortName).toSet();
+    expect(keys, isNot(contains("DPF_DP")));
+  });
+
   test('odczyty czujników są poprawnie dekodowane', () async {
     await connect();
     ObdPid pid(String k) => obd.discoveredPids.firstWhere((p) => p.shortName == k);

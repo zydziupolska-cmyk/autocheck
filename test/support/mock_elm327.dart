@@ -394,11 +394,20 @@ class MockElm327 {
   /// PID 4F bajt D (zakres MAP ×10 kPa) — gdy ustawiony, PID 0B jest przeskalowany.
   int? mapRangeTens;
 
+  /// PID-y, na które sterownik ODPOWIADA, ale których NIE zgłasza w masce
+  /// wsparcia (jak część diesli VAG). Służą do testu „force-probe".
+  Set<int> hiddenPids = {};
+
+  /// PID-y całkowicie nieobsługiwane: usunięte z maski i bez odpowiedzi.
+  Set<int> unsupportedPids = {};
+
   Set<int> get _supported => {
         ...engineSupported,
         ...(petrol ? petrolExtra : dieselExtra),
         if (mapRangeTens != null) 0x4F,
-      };
+      }
+        ..removeAll(hiddenPids)
+        ..removeAll(unsupportedPids);
 
   List<int> _u16(double v) {
     final i = v.round().clamp(0, 0xFFFF);
@@ -465,7 +474,7 @@ class MockElm327 {
         if (req.length < 2) return null;
         final pid = req[1];
         if (pid % 0x20 == 0) return [0x41, pid, ..._mask(pid, _supported)];
-        if (!_supported.contains(pid)) return null;
+        if (!_supported.contains(pid) && !hiddenPids.contains(pid)) return null;
         switch (pid) {
           case 0x06:
             return [0x41, 0x06, 128]; // STFT 0%

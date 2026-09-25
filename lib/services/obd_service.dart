@@ -747,6 +747,24 @@ class ObdService extends ChangeNotifier {
     return _supportedPids.isEmpty || _supportedPids.contains(n);
   }
 
+  /// Standardowe PID-y diagnostyki diesla, które wiele sterowników (zwł. VAG)
+  /// obsługuje, ale których NIE zgłasza w masce wsparcia (0100/0120/...).
+  /// Dla nich próbujemy realnego odczytu mimo braku flagi i zostawiamy kanał
+  /// tylko, gdy odpowiedź jest wiarygodna. Tak samo robi Torque.
+  static const Set<String> _forceProbeCodes = {
+    "0170", // doładowanie (rzeczywiste/zadane)
+    "0178", // temperatura spalin (EGT)
+    "017A", // różnica ciśnień na DPF
+    "017C", // temperatura przed DPF
+    "0173", // ciśnienie spalin
+    "016D", // ciśnienie na szynie (rzeczywiste/zadane)
+    "0177", // temperatura za intercoolerem
+    "0169", // EGR — zadane/rzeczywiste (grupowe)
+    "012C", // EGR — zadane
+    "012D", // EGR — błąd pozycjonowania
+    "015C", // temperatura oleju
+  };
+
   /// Wybiera źródło każdego kanału. Dla kanałów z kilkoma możliwymi PIDami
   /// (np. BOOST: 70 → 87 → 0B) bierze pierwszy, który ECU obsługuje. PIDy
   /// wielowartościowe są odczytywane raz, żeby sprawdzić bity obsługi —
@@ -757,13 +775,26 @@ class ObdService extends ChangeNotifier {
     final seen = <String>{};
 
     for (final pid in ObdPid.standardPids) {
-      if (seen.contains(pid.shortName) || !_isSupportedByMask(pid)) continue;
-      if (pid.hasSupportByte) {
+      if (seen.contains(pid.shortName)) continue;
+      final byMask = _isSupportedByMask(pid);
+      // Kanał spoza maski: próbujemy tylko dla wybranych PID-ów diesla.
+      final forceProbe = !byMask && _forceProbeCodes.contains(pid.code) && _hasTransport;
+      if (!byMask && !forceProbe) continue;
+
+      if (pid.hasSupportByte || forceProbe) {
         if (!rawCache.containsKey(pid.code)) {
           rawCache[pid.code] = await _readPayload(pid);
         }
         final raw = rawCache[pid.code];
-        if (raw == null || !pid.decoder(raw).isFinite) continue;
+        if (raw == null) continue;
+        final decoded = pid.decoder(raw);
+        if (!decoded.isFinite) continue;
+        // Przy odczycie spoza maski wymagamy wiarygodnej wartości po przeliczeniu,
+        // żeby nie dodać kanału, na który auto odpowiada „śmieciem".
+        if (forceProbe) {
+          final v = _transform(pid, decoded);
+          if (v == null || !_isPlausible(pid.shortName, v)) continue;
+        }
       }
       seen.add(pid.shortName);
       list.add(pid);
