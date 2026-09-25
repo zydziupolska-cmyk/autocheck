@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../models/anomaly.dart';
 import '../models/log_point.dart';
+import 'engine_memory.dart';
 import '../models/obd_pid.dart';
 import 'analysis/drive_state.dart';
 import 'anomaly_engine.dart';
@@ -56,6 +57,9 @@ class DataloggerService extends ChangeNotifier {
   /// Czy zapisywać historię logów na dysku (wyłączane w testach).
   final bool persistHistory;
 
+  /// Pamięć wyboru silnika (po VIN) — pozwala pewnie przypisać silnik do notatek.
+  EngineMemory? engineMemory;
+
   bool _isRecording = false;
   List<LogPoint> _currentPoints = [];
   List<Anomaly> _detectedAnomalies = [];
@@ -96,7 +100,7 @@ class DataloggerService extends ChangeNotifier {
 
   static const int _pullPreRollMs = 1000;
 
-  DataloggerService({required this.obdService, this.persistHistory = true}) {
+  DataloggerService({required this.obdService, this.persistHistory = true, this.engineMemory}) {
     obdService.addListener(_onObdChanged);
     if (persistHistory) _loadHistory();
   }
@@ -125,6 +129,9 @@ class DataloggerService extends ChangeNotifier {
     if (v == null) return "";
     return [v.manufacturer, v.modelName, v.engineDescription, v.calibrationId, v.ecuName, v.vin].join(" ");
   }
+
+  /// Potwierdzony kod silnika dla bieżącego auta (z pamięci po VIN) albo "".
+  String get _engineCode => engineMemory?.codeForVin(obdService.vehicleInfo?.vin) ?? "";
 
   void setMode(LogMode mode) {
     if (_isRecording) return;
@@ -318,7 +325,7 @@ class DataloggerService extends ChangeNotifier {
 
   void _finishSession(LogMode mode) {
     final isDiesel = _isDiesel;
-    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: isDiesel, engineInfo: _engineInfo);
+    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: isDiesel, engineInfo: _engineInfo, engineCode: _engineCode);
 
     if (_currentPoints.isNotEmpty) {
       final session = _buildSession(mode);
@@ -349,7 +356,7 @@ class DataloggerService extends ChangeNotifier {
       if (idx >= 0) _sessionsHistory[idx] = updated;
       if (_activeSession?.id == session.id) {
         _activeSession = updated;
-        _detectedAnomalies = AnomalyEngine.analyzeSession(updated.points, isDiesel: updated.isDiesel, dtcCodes: list, engineInfo: updated.engineInfo);
+        _detectedAnomalies = AnomalyEngine.analyzeSession(updated.points, isDiesel: updated.isDiesel, dtcCodes: list, engineInfo: updated.engineInfo, engineCode: _codeForSession(updated));
       }
       if (persistHistory) await _saveSession(updated);
     } finally {
@@ -372,8 +379,16 @@ class DataloggerService extends ChangeNotifier {
       isDiesel: _isDiesel,
       vehicleLabel: info != null ? "${info.manufacturer} ${info.modelName} • ${info.vin}" : null,
       engineInfo: _engineInfo,
+      vin: info?.vin ?? "",
+      engineCode: _engineCode,
       mode: mode,
     );
+  }
+
+  /// Kod silnika dla zapisanej sesji: potwierdzony w sesji albo z pamięci po VIN.
+  String _codeForSession(LogSession s) {
+    if (s.engineCode.isNotEmpty) return s.engineCode;
+    return engineMemory?.codeForVin(s.vin) ?? "";
   }
 
   static String _two(int v) => v.toString().padLeft(2, '0');
@@ -516,7 +531,20 @@ class DataloggerService extends ChangeNotifier {
     if (_isRecording) return;
     _activeSession = session;
     _currentPoints = List.from(session.points);
-    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes, engineInfo: session.engineInfo);
+    _reanalyzeActive();
+    notifyListeners();
+  }
+
+  void _reanalyzeActive() {
+    final s = _activeSession;
+    if (s == null || _currentPoints.isEmpty) return;
+    _detectedAnomalies = AnomalyEngine.analyzeSession(_currentPoints,
+        isDiesel: s.isDiesel, dtcCodes: s.dtcCodes, engineInfo: s.engineInfo, engineCode: _codeForSession(s));
+  }
+
+  /// Ponawia analizę bieżącej sesji (np. po zmianie przypisanego silnika).
+  void reanalyze() {
+    _reanalyzeActive();
     notifyListeners();
   }
 
@@ -591,7 +619,7 @@ class DataloggerService extends ChangeNotifier {
         : <String>{for (final p in points) ...p.values.keys}.toList();
     final anomalyCount = session == null
         ? _detectedAnomalies.length
-        : AnomalyEngine.analyzeSession(points, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes, engineInfo: session.engineInfo).length;
+        : AnomalyEngine.analyzeSession(points, isDiesel: session.isDiesel, dtcCodes: session.dtcCodes, engineInfo: session.engineInfo, engineCode: _codeForSession(session)).length;
 
     final StringBuffer buffer = StringBuffer();
     buffer.writeln(["Time_ms", "Time_s", ...keys].join(","));

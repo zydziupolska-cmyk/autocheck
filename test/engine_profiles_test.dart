@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:autocheck/models/engine_profiles.dart';
+import 'package:autocheck/models/vin_decoder.dart';
+import 'package:autocheck/services/engine_memory.dart';
 import 'package:autocheck/services/anomaly_engine.dart';
 import 'real_logs_test.dart' as r;
 
@@ -29,5 +31,36 @@ void main() {
     final pts = r.loadCsv("test/fixtures/touran_1t_wot_1.csv");
     final a = AnomalyEngine.analyzeSession(pts, isDiesel: true, engineInfo: "Nieznane auto");
     expect(a.every((x) => x.engineNote == null), isTrue);
+  });
+
+  test('identify: kod daje wysoką pewność, zgodna marka z VIN podbija', () {
+    final m = EngineProfiles.identify("Volkswagen 03L906023PJ 2.0 TDI", vinMake: "Volkswagen")!;
+    expect(m.profile.code, "EA189");
+    expect(m.confidence, anyOf(EngineConfidence.high, EngineConfidence.confirmed));
+    expect(m.basis, isNotEmpty);
+  });
+
+  test('identify: niezgodna marka z VIN odrzuca dopasowanie', () {
+    // "N47" w tekście, ale VIN mówi Toyota — profil BMW nie powinien wygrać
+    final m = EngineProfiles.identify("Toyota Auris N47 coś", vinMake: "Toyota");
+    expect(m?.profile.code, isNot("N47"));
+  });
+
+  test('VIN dekoder: marka i rok', () {
+    final vin = VinDecoder.decode("WVGZZZ1TZFW011407");
+    expect(vin.make, "Volkswagen");
+    expect(vin.valid, isTrue);
+  });
+
+  test('pamięć: zapamiętany wybór wygrywa z rozpoznaniem (confirmed)', () {
+    final mem = EngineMemory(persist: false);
+    // resolveFor bez pamięci → rozpoznanie z danych
+    final auto = mem.resolveFor("WVGZZZ1TZFW011407", "Volkswagen 03L906 2.0 TDI");
+    expect(auto?.profile.code, "EA189");
+    // zapamiętaj inny silnik ręcznie
+    mem.remember("WVGZZZ1TZFW011407", "CR_TDI_20");
+    final fixed = mem.resolveFor("WVGZZZ1TZFW011407", "Volkswagen 03L906 2.0 TDI");
+    expect(fixed?.profile.code, "CR_TDI_20");
+    expect(fixed?.confidence, EngineConfidence.confirmed);
   });
 }

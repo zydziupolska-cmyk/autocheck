@@ -10,6 +10,7 @@ import 'package:autocheck/services/obd_service.dart';
 import 'package:autocheck/services/datalogger_service.dart';
 import 'package:autocheck/main.dart';
 import 'package:autocheck/services/pid_definitions_store.dart';
+import 'package:autocheck/services/engine_memory.dart';
 
 import 'package:autocheck/models/extended_pid.dart';
 
@@ -110,6 +111,7 @@ void main() {
           ChangeNotifierProvider.value(value: obdService),
           ChangeNotifierProvider.value(value: dataloggerService),
           ChangeNotifierProvider.value(value: definitionsStore),
+          ChangeNotifierProvider.value(value: EngineMemory(persist: false)),
         ],
         child: const DynomicDiagApp(),
       ),

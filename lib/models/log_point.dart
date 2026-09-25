@@ -77,6 +77,10 @@ class LogSession {
   /// Dane do rozpoznania silnika (producent, opis silnika, CALID, VIN) — do bazy silników.
   final String engineInfo;
 
+  /// VIN pojazdu (do pamięci wyboru silnika) i ewentualnie potwierdzony kod silnika.
+  final String vin;
+  final String engineCode;
+
   LogSession({
     required this.id,
     required this.title,
@@ -88,6 +92,8 @@ class LogSession {
     this.mode = LogMode.drive,
     this.dtcCodes = const [],
     this.engineInfo = "",
+    this.vin = "",
+    this.engineCode = "",
   }) : durationSec = points.isEmpty ? 0.0 : (points.last.timeMs - points.first.timeMs) / 1000.0;
 
   LogSession withDtcCodes(List<String> codes) => LogSession(
@@ -101,6 +107,8 @@ class LogSession {
         mode: mode,
         dtcCodes: codes,
         engineInfo: engineInfo,
+        vin: vin,
+        engineCode: engineCode,
       );
 
   Map<String, dynamic> toJson() => {
@@ -111,6 +119,8 @@ class LogSession {
         "isDiesel": isDiesel,
         "vehicleLabel": vehicleLabel,
         "engineInfo": engineInfo,
+        "vin": vin,
+        "engineCode": engineCode,
         "mode": mode.name,
         "dtcCodes": dtcCodes,
         "points": points.map((p) => p.toJson()).toList(),
@@ -124,6 +134,8 @@ class LogSession {
         isDiesel: json["isDiesel"] as bool? ?? false,
         vehicleLabel: json["vehicleLabel"] as String?,
         engineInfo: json["engineInfo"] as String? ?? "",
+        vin: json["vin"] as String? ?? "",
+        engineCode: json["engineCode"] as String? ?? "",
         mode: json["mode"] == "pull" ? LogMode.pull : LogMode.drive,
         dtcCodes: (json["dtcCodes"] as List?)?.map((e) => e.toString()).toList() ?? const [],
         points: (json["points"] as List).map((e) => LogPoint.fromJson(e as Map<String, dynamic>)).toList(),

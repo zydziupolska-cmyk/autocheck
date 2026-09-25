@@ -7,6 +7,7 @@ import '../services/datalogger_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui.dart';
 import '../models/engine_profiles.dart';
+import '../services/engine_memory.dart';
 
 class DiagnosticScreen extends StatelessWidget {
   final void Function(int tabIndex)? onNavigateToTab;
@@ -69,7 +70,7 @@ class DiagnosticScreen extends StatelessWidget {
           else ...[
             _sessionSummary(session),
             const SizedBox(height: 12),
-            ?_engineCard(session.engineInfo),
+            _EngineCard(vin: session.vin, engineInfo: session.engineInfo),
             if (anomalies.isEmpty)
               const Notice(
                 "Parametry dostępne w tym logu nie wskazują usterki. Poniżej: czego ten log nie pozwolił ocenić.",
@@ -93,42 +94,6 @@ class DiagnosticScreen extends StatelessWidget {
               ),
           ],
         ],
-      ),
-    );
-  }
-
-  /// Odniesienie: znane słabości rozpoznanego silnika (nie diagnoza z tego logu).
-  Widget? _engineCard(String engineInfo) {
-    final engine = EngineProfiles.detect(engineInfo);
-    if (engine == null) return null;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Panel(
-        padding: EdgeInsets.zero,
-        child: ExpansionTile(
-          leading: const Icon(Icons.build_circle_outlined, color: AppTheme.info),
-          title: Text(engine.name, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-          subtitle: Text("Znane słabości tego silnika (${engine.faults.length}) — ogólne, nie z tego logu",
-              style: const TextStyle(color: AppTheme.textMuted, fontSize: 12)),
-          childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-          expandedCrossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final f in engine.faults)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text("• ${f.title}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-                    Padding(
-                      padding: const EdgeInsets.only(left: 12, top: 1),
-                      child: Text(f.note, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5, height: 1.35)),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ),
       ),
     );
   }
@@ -370,6 +335,176 @@ class _AnomalyCardState extends State<AnomalyCard> {
                 ],
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Karta rozpoznanego silnika: pewność, na czym oparto, ręczny wybór (zapis pod VIN)
+/// i znane słabości jednostki.
+class _EngineCard extends StatelessWidget {
+  final String vin;
+  final String engineInfo;
+  const _EngineCard({required this.vin, required this.engineInfo});
+
+  static (String, Color) _confidence(EngineConfidence c) {
+    switch (c) {
+      case EngineConfidence.confirmed:
+        return ("potwierdzony", AppTheme.ok);
+      case EngineConfidence.high:
+        return ("pewność wysoka", AppTheme.ok);
+      case EngineConfidence.medium:
+        return ("pewność średnia — potwierdź", AppTheme.warn);
+      case EngineConfidence.low:
+        return ("niepewne — wybierz ręcznie", AppTheme.warn);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final memory = context.watch<EngineMemory>();
+    final match = memory.resolveFor(vin, engineInfo);
+    final canRemember = vin.length >= 11;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Panel(
+        padding: EdgeInsets.zero,
+        child: ExpansionTile(
+          leading: const Icon(Icons.build_circle_outlined, color: AppTheme.info),
+          title: Text(match?.profile.name ?? "Silnik nierozpoznany",
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+          subtitle: Builder(builder: (_) {
+            if (match == null) {
+              return const Text("Nie dopasowano do bazy — możesz wybrać ręcznie",
+                  style: TextStyle(color: AppTheme.textMuted, fontSize: 12));
+            }
+            final (label, color) = _confidence(match.confidence);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  StatusDot(color, size: 7),
+                  const SizedBox(width: 6),
+                  Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w500)),
+                ]),
+                Text("na podstawie: ${match.basis}", style: const TextStyle(color: AppTheme.textMuted, fontSize: 11.5)),
+              ],
+            );
+          }),
+          childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+          expandedCrossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (match != null) ...[
+              const SectionLabel("Znane słabości tego silnika (ogólne, nie z tego logu)"),
+              for (final f in match.profile.faults)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text("• ${f.title}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                      Padding(
+                        padding: const EdgeInsets.only(left: 12, top: 1),
+                        child: Text(f.note, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5, height: 1.35)),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 4),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: canRemember ? () => _pick(context, memory) : null,
+                    icon: const Icon(Icons.edit, size: 16),
+                    label: Text(match == null ? "Wybierz silnik" : "Zmień silnik"),
+                  ),
+                ),
+                if (match?.confidence == EngineConfidence.confirmed) ...[
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    tooltip: "Zapomnij wybór",
+                    onPressed: () {
+                      memory.forget(vin);
+                      context.read<DataloggerService>().reanalyze();
+                    },
+                  ),
+                ],
+              ],
+            ),
+            if (!canRemember)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text("Brak VIN w tym logu — wybór nie zostanie zapamiętany.",
+                    style: TextStyle(color: AppTheme.textMuted, fontSize: 11.5)),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pick(BuildContext context, EngineMemory memory) async {
+    final code = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
+      builder: (_) => const _EnginePicker(),
+    );
+    if (code == null) return;
+    await memory.remember(vin, code);
+    if (context.mounted) context.read<DataloggerService>().reanalyze();
+  }
+}
+
+class _EnginePicker extends StatefulWidget {
+  const _EnginePicker();
+  @override
+  State<_EnginePicker> createState() => _EnginePickerState();
+}
+
+class _EnginePickerState extends State<_EnginePicker> {
+  String _q = "";
+
+  @override
+  Widget build(BuildContext context) {
+    final items = EngineProfiles.all
+        .where((p) => _q.isEmpty || "${p.name} ${p.code} ${p.aliases.join(' ')}".toLowerCase().contains(_q.toLowerCase()))
+        .toList();
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.7,
+      maxChildSize: 0.92,
+      builder: (ctx, scroll) => Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: TextField(
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: "Szukaj silnika (nazwa lub kod, np. EA189, N47, 1.9 TDI)",
+                prefixIcon: Icon(Icons.search),
+              ),
+              onChanged: (v) => setState(() => _q = v),
+            ),
+          ),
+          Expanded(
+            child: ListView.separated(
+              controller: scroll,
+              itemCount: items.length,
+              separatorBuilder: (_, i) => const Divider(height: 1),
+              itemBuilder: (_, i) => ListTile(
+                dense: true,
+                title: Text(items[i].name, style: const TextStyle(fontSize: 13.5)),
+                subtitle: Text(items[i].code, style: const TextStyle(color: AppTheme.textMuted, fontSize: 11.5)),
+                onTap: () => Navigator.pop(context, items[i].code),
+              ),
+            ),
+          ),
         ],
       ),
     );

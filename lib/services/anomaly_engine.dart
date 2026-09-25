@@ -12,7 +12,7 @@ class AnomalyEngine {
   /// [isDiesel] wyłącza reguły, które mają sens tylko w silnikach benzynowych
   /// (skład mieszanki AFR/lambda, sonda wąskopasmowa, kąt zapłonu, podciśnienie
   /// w kolektorze na biegu jałowym — diesel nie ma przepustnicy dławiącej).
-  static List<Anomaly> analyzeSession(List<LogPoint> rawPoints, {bool isDiesel = false, List<String> dtcCodes = const [], String engineInfo = ""}) {
+  static List<Anomaly> analyzeSession(List<LogPoint> rawPoints, {bool isDiesel = false, List<String> dtcCodes = const [], String engineInfo = "", String engineCode = ""}) {
     if (rawPoints.length < 5) return [];
     // Wolne kanały są odpytywane rzadziej — uzupełnij je ostatnią znaną wartością
     final points = DriveState.forwardFill(rawPoints);
@@ -92,7 +92,7 @@ class AnomalyEngine {
 
     // Dopełnienie wiedzą o silniku: gdy anomalia pasuje do typowej wady wykrytej
     // jednostki, dokładamy krótką notatkę „typowe dla tego silnika…”.
-    return _annotateWithEngine(anomalies, engineInfo);
+    return _annotateWithEngine(anomalies, engineInfo, engineCode);
   }
 
   /// Mapuje anomalię na obszar usterki (do dopasowania profilu silnika).
@@ -111,9 +111,10 @@ class AnomalyEngine {
     return null;
   }
 
-  static List<Anomaly> _annotateWithEngine(List<Anomaly> anomalies, String engineInfo) {
-    if (engineInfo.trim().isEmpty) return anomalies;
-    final engine = EngineProfiles.detect(engineInfo);
+  static List<Anomaly> _annotateWithEngine(List<Anomaly> anomalies, String engineInfo, String engineCode) {
+    final engine = engineCode.isNotEmpty
+        ? EngineProfiles.byCode(engineCode)
+        : (engineInfo.trim().isEmpty ? null : EngineProfiles.detect(engineInfo));
     if (engine == null) return anomalies;
     return [
       for (final a in anomalies)

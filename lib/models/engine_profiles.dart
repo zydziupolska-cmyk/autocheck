@@ -47,18 +47,126 @@ class EngineProfile {
   }
 }
 
+/// Pewność rozpoznania silnika.
+enum EngineConfidence { confirmed, high, medium, low }
+
+/// Wynik rozpoznania: profil, pewność, na czym oparto i czy było niejednoznaczne.
+class EngineMatch {
+  final EngineProfile profile;
+  final EngineConfidence confidence;
+  final String basis; // np. "numer oprogramowania: 03L906023PJ"
+  final bool ambiguous; // pasowało kilka silników — warto potwierdzić
+  const EngineMatch(this.profile, this.confidence, this.basis, {this.ambiguous = false});
+}
+
 class EngineProfiles {
-  /// Wykrywa silnik na podstawie tekstu złożonego z danych pojazdu
-  /// (producent, opis silnika, CALID/numer części, model, VIN).
-  static EngineProfile? detect(String haystack) {
-    final s = haystack.toUpperCase();
+  static EngineProfile? byCode(String code) {
     for (final p in all) {
-      for (final a in p.aliases) {
-        if (s.contains(a.toUpperCase())) return p;
-      }
+      if (p.code == code) return p;
     }
     return null;
   }
+
+  /// Marki, których nazwa/kod profilu dotyczy (do sprawdzenia zgodności z VIN).
+  static const Map<String, List<String>> _profileMakes = {
+    "VOLKSWAGEN": ["VW ", "VW/", "VOLKSWAGEN"],
+    "AUDI": ["AUDI"],
+    "ŠKODA": ["SKODA", "ŠKODA"],
+    "SEAT": ["SEAT"],
+    "BMW": ["BMW"],
+    "MERCEDES-BENZ": ["MERCEDES"],
+    "PEUGEOT": ["PSA", "PEUGEOT"],
+    "CITROËN": ["PSA", "CITRO"],
+    "RENAULT": ["RENAULT"],
+    "DACIA": ["RENAULT", "DACIA"],
+    "FORD": ["FORD"],
+    "OPEL": ["OPEL"],
+    "FIAT": ["FIAT"],
+    "ALFA ROMEO": ["ALFA"],
+    "MAZDA": ["MAZDA"],
+    "TOYOTA": ["TOYOTA"],
+    "HONDA": ["HONDA"],
+    "HYUNDAI": ["HYUNDAI", "HYUNDAI/KIA", "HK "],
+    "KIA": ["KIA", "HYUNDAI/KIA", "HK "],
+    "VOLVO": ["VOLVO"],
+    "SUBARU": ["SUBARU"],
+    "SMART": ["SMART"],
+    "NISSAN": ["RENAULT/NISSAN", "NISSAN"],
+  };
+
+  static bool _profileFitsMake(EngineProfile p, String make) {
+    final needles = _profileMakes[make.toUpperCase()];
+    if (needles == null) return true; // nieznana marka VIN — nie karzemy
+    final hay = "${p.name} ${p.code}".toUpperCase();
+    return needles.any(hay.contains);
+  }
+
+  /// Czy alias wygląda na kod silnika/numer (mocny sygnał), a nie na ogólną
+  /// frazę „1.9 TDI” (słabszy sygnał).
+  static bool _isCodeLike(String alias) {
+    final a = alias.trim();
+    if (a.contains(' ') || a.contains('.')) return false; // fraza pojemność/paliwo
+    return RegExp(r'\d').hasMatch(a) && RegExp(r'[A-Za-z]').hasMatch(a) || a.length >= 4;
+  }
+
+  /// Rozpoznaje silnik z punktacją i oceną pewności.
+  /// [vinMake] — marka z VIN (jeśli znana) do sprawdzenia zgodności.
+  static EngineMatch? identify(String haystack, {String? vinMake}) {
+    final s = haystack.toUpperCase();
+    EngineProfile? best;
+    int bestScore = 0;
+    String bestBasis = "";
+    bool bestCode = false;
+    int strongCount = 0; // ile profili trafiło mocnym sygnałem (do niejednoznaczności)
+
+    for (final p in all) {
+      int score = 0;
+      String basis = "";
+      bool code = false;
+      for (final a in p.aliases) {
+        if (!s.contains(a.toUpperCase())) continue;
+        if (_isCodeLike(a)) {
+          score += 3;
+          if (!code) basis = a;
+          code = true;
+        } else {
+          score += 1;
+          if (basis.isEmpty) basis = a;
+        }
+      }
+      if (score == 0) continue;
+      // Zgodność z marką z VIN: bonus albo kara
+      if (vinMake != null && vinMake.isNotEmpty) {
+        score += _profileFitsMake(p, vinMake) ? 2 : -5;
+      }
+      if (code && score > 0) strongCount++;
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+        bestBasis = basis;
+        bestCode = code;
+      }
+    }
+
+    if (best == null || bestScore <= 0) return null;
+
+    EngineConfidence conf;
+    if (bestCode && bestScore >= 5) {
+      conf = EngineConfidence.high; // kod + zgodna marka
+    } else if (bestCode) {
+      conf = EngineConfidence.high;
+    } else if (bestScore >= 2) {
+      conf = EngineConfidence.medium;
+    } else {
+      conf = EngineConfidence.low;
+    }
+    final ambiguous = strongCount > 1;
+    if (ambiguous && conf == EngineConfidence.high) conf = EngineConfidence.medium;
+    return EngineMatch(best, conf, bestBasis, ambiguous: ambiguous);
+  }
+
+  /// Zgodne z wcześniejszym API: sam profil (bez oceny pewności).
+  static EngineProfile? detect(String haystack) => identify(haystack)?.profile;
 
   static const List<EngineProfile> all = [
     // ---------------------------------------------------------------- VAG diesle
