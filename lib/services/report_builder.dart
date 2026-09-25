@@ -1,5 +1,6 @@
 import '../models/anomaly.dart';
 import '../models/engine_profiles.dart';
+import '../models/engine_specs.dart';
 import '../models/log_point.dart';
 
 /// Raport z diagnozy dla klienta warsztatu.
@@ -12,6 +13,7 @@ class DiagnosisReport {
   final LogSession session;
   final List<Anomaly> anomalies;
   final EngineMatch? engine;
+  final EngineSpec? spec;
   final String workshopName;
   final DateTime generatedAt;
 
@@ -19,9 +21,11 @@ class DiagnosisReport {
     required this.session,
     required this.anomalies,
     this.engine,
+    EngineSpec? spec,
     this.workshopName = "Dynomic",
     DateTime? generatedAt,
-  }) : generatedAt = generatedAt ?? DateTime.now();
+  })  : spec = spec ?? EngineSpecs.byCode(session.engineCode) ?? EngineSpecs.findInText(session.engineInfo),
+        generatedAt = generatedAt ?? DateTime.now();
 
   bool get hasCritical => anomalies.any((a) => a.severity == AnomalySeverity.critical);
   bool get hasIssues => anomalies.isNotEmpty;
@@ -59,6 +63,7 @@ class DiagnosisReport {
     if (session.vehicleLabel != null) b.writeln("  ${session.vehicleLabel}");
     if (session.vin.isNotEmpty) b.writeln("  VIN: ${session.vin}");
     if (engine != null) b.writeln("  Silnik: ${engine!.profile.name}");
+    if (spec != null) b.writeln("  Dane silnika (${spec!.code}): ${spec!.summary}");
     b.writeln();
     b.writeln("POMIAR");
     b.writeln("  Tryb: ${session.mode == LogMode.pull ? 'Przyspieszenie' : 'Jazda diagnostyczna'}");
@@ -154,6 +159,7 @@ class DiagnosisReport {
     if (session.vehicleLabel != null) b.writeln('<div><b>Pojazd:</b> ${_esc(session.vehicleLabel!)}</div>');
     if (session.vin.isNotEmpty) b.writeln('<div><b>VIN:</b> ${_esc(session.vin)}</div>');
     if (engine != null) b.writeln('<div><b>Silnik:</b> ${_esc(engine!.profile.name)}</div>');
+    if (spec != null) b.writeln('<div><b>Dane silnika (${_esc(spec!.code)}):</b> ${_esc(spec!.summary)}</div>');
     b.writeln('</div>');
 
     b.writeln('<h2>Pomiar</h2><div class="grid">'

@@ -11,6 +11,7 @@ import '../services/report_builder.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui.dart';
 import '../models/engine_profiles.dart';
+import '../models/engine_specs.dart';
 import '../services/engine_memory.dart';
 
 class DiagnosticScreen extends StatelessWidget {
@@ -402,6 +403,7 @@ class _EngineCard extends StatelessWidget {
     final memory = context.watch<EngineMemory>();
     final match = memory.resolveFor(vin, engineInfo);
     final canRemember = vin.length >= 11;
+    final spec = EngineSpecs.findInText(engineInfo);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -432,6 +434,23 @@ class _EngineCard extends StatelessWidget {
           childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
           expandedCrossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (spec != null) ...[
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 1),
+                    child: Icon(Icons.info_outline, size: 16, color: AppTheme.textMuted),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text("Dane katalogowe (${spec.code}): ${spec.summary}",
+                        style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12.5, height: 1.35)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+            ],
             if (match != null) ...[
               const SectionLabel("Znane słabości tego silnika (ogólne, nie z tego logu)"),
               for (final f in match.profile.faults)

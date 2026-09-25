@@ -1,0 +1,1114 @@
+{
+  "source": "car2db.com (demo)",
+  "engines": [
+    {
+      "code": "ABC",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 2598.0,
+      "powerHp": 150.0,
+      "powerKw": 110.0,
+      "torqueNm": 225.0,
+      "cylinders": 6.0,
+      "boost": null,
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A6"
+      ],
+      "powerVariants": [
+        150.0
+      ]
+    },
+    {
+      "code": "AJL",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1781.0,
+      "powerHp": 180.0,
+      "powerKw": 132.0,
+      "torqueNm": 235.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A4"
+      ],
+      "powerVariants": [
+        180.0
+      ]
+    },
+    {
+      "code": "ALH",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 1896.0,
+      "powerHp": 90.0,
+      "powerKw": 66.0,
+      "torqueNm": 210.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A3"
+      ],
+      "powerVariants": [
+        90.0
+      ]
+    },
+    {
+      "code": "AMB",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1781.0,
+      "powerHp": 170.0,
+      "powerKw": 126.0,
+      "torqueNm": 225.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A4"
+      ],
+      "powerVariants": [
+        170.0
+      ]
+    },
+    {
+      "code": "APG",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1781.0,
+      "powerHp": 125.0,
+      "powerKw": 92.0,
+      "torqueNm": 170.0,
+      "cylinders": 4.0,
+      "boost": null,
+      "yearBegin": 2002,
+      "yearEnd": 2003,
+      "models": [
+        "Audi A3"
+      ],
+      "powerVariants": [
+        125.0
+      ]
+    },
+    {
+      "code": "ASB",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 2967.0,
+      "powerHp": 233.0,
+      "powerKw": 171.0,
+      "torqueNm": 500.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q7"
+      ],
+      "powerVariants": [
+        233.0
+      ]
+    },
+    {
+      "code": "AUK",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 3123.0,
+      "powerHp": 255.0,
+      "powerKw": 188.0,
+      "torqueNm": 330.0,
+      "cylinders": 6.0,
+      "boost": null,
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A4"
+      ],
+      "powerVariants": [
+        255.0
+      ]
+    },
+    {
+      "code": "AVB",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 1896.0,
+      "powerHp": 100.0,
+      "powerKw": 74.0,
+      "torqueNm": 250.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": 2002,
+      "yearEnd": 2003,
+      "models": [
+        "Audi A3"
+      ],
+      "powerVariants": [
+        100.0
+      ]
+    },
+    {
+      "code": "AVJ",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1781.0,
+      "powerHp": 150.0,
+      "powerKw": 110.0,
+      "torqueNm": 210.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": 1997,
+      "yearEnd": 2001,
+      "models": [
+        "Audi A6"
+      ],
+      "powerVariants": [
+        150.0
+      ]
+    },
+    {
+      "code": "BDG",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 2496.0,
+      "powerHp": 163.0,
+      "powerKw": 120.0,
+      "torqueNm": 310.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": 2004,
+      "yearEnd": 2007,
+      "models": [
+        "Audi A4"
+      ],
+      "powerVariants": [
+        163.0
+      ]
+    },
+    {
+      "code": "BDV",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 2393.0,
+      "powerHp": 170.0,
+      "powerKw": 125.0,
+      "torqueNm": 300.0,
+      "cylinders": 6.0,
+      "boost": null,
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A6"
+      ],
+      "powerVariants": [
+        170.0
+      ]
+    },
+    {
+      "code": "BES",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 2671.0,
+      "powerHp": 250.0,
+      "powerKw": 184.0,
+      "torqueNm": 350.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A6"
+      ],
+      "powerVariants": [
+        250.0
+      ]
+    },
+    {
+      "code": "BRD",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 1968.0,
+      "powerHp": 170.0,
+      "powerKw": null,
+      "torqueNm": 350.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A5"
+      ],
+      "powerVariants": [
+        170.0
+      ]
+    },
+    {
+      "code": "BUB",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 3189.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 320.0,
+      "cylinders": 6.0,
+      "boost": null,
+      "yearBegin": 2008,
+      "yearEnd": 2011,
+      "models": [
+        "Audi A3"
+      ],
+      "powerVariants": []
+    },
+    {
+      "code": "CASA",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 2967.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 550.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q7"
+      ],
+      "powerVariants": []
+    },
+    {
+      "code": "CCLA, CCWA",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 2967.0,
+      "powerHp": 239.0,
+      "powerKw": 176.0,
+      "torqueNm": 500.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": 2008,
+      "yearEnd": 2012,
+      "models": [
+        "Audi Q5"
+      ],
+      "powerVariants": [
+        239.0
+      ]
+    },
+    {
+      "code": "CGCL",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 1968.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 380.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": 2011,
+      "yearEnd": null,
+      "models": [
+        "Audi A4",
+        "Audi A5",
+        "Audi Q5"
+      ],
+      "powerVariants": [
+        177.0
+      ]
+    },
+    {
+      "code": "CJGD, CLZB, CRCA",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 2967.0,
+      "powerHp": 245.0,
+      "powerKw": 180.0,
+      "torqueNm": 550.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q7"
+      ],
+      "powerVariants": [
+        245.0
+      ]
+    },
+    {
+      "code": "CJTC",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 2967.0,
+      "powerHp": 272.0,
+      "powerKw": 200.0,
+      "torqueNm": 600.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q7"
+      ],
+      "powerVariants": [
+        272.0
+      ]
+    },
+    {
+      "code": "CKVC",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 2967.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 500.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A6"
+      ],
+      "powerVariants": []
+    },
+    {
+      "code": "CMBA",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1395.0,
+      "powerHp": 122.0,
+      "powerKw": null,
+      "torqueNm": 200.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": 2013,
+      "yearEnd": 2014,
+      "models": [
+        "Audi A3"
+      ],
+      "powerVariants": [
+        122.0
+      ]
+    },
+    {
+      "code": "CMUA",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 2995.0,
+      "powerHp": 272.0,
+      "powerKw": 200.0,
+      "torqueNm": 400.0,
+      "cylinders": 6.0,
+      "boost": "compressor",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q7"
+      ],
+      "powerVariants": [
+        272.0
+      ]
+    },
+    {
+      "code": "CNCE",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1984.0,
+      "powerHp": 230.0,
+      "powerKw": 169.0,
+      "torqueNm": 350.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A5"
+      ],
+      "powerVariants": [
+        230.0
+      ]
+    },
+    {
+      "code": "CNHA",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 1968.0,
+      "powerHp": 190.0,
+      "powerKw": 140.0,
+      "torqueNm": 400.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A5"
+      ],
+      "powerVariants": [
+        190.0
+      ]
+    },
+    {
+      "code": "CRLB, DBGA, DEJA",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 1968.0,
+      "powerHp": 184.0,
+      "powerKw": 135.0,
+      "torqueNm": 380.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A3"
+      ],
+      "powerVariants": [
+        184.0
+      ]
+    },
+    {
+      "code": "CTBA",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 2967.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 580.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q5"
+      ],
+      "powerVariants": []
+    },
+    {
+      "code": "CUKB, CZEA",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1395.0,
+      "powerHp": 150.0,
+      "powerKw": 110.0,
+      "torqueNm": 250.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A3"
+      ],
+      "powerVariants": [
+        150.0
+      ]
+    },
+    {
+      "code": "CVKB",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1984.0,
+      "powerHp": 190.0,
+      "powerKw": 140.0,
+      "torqueNm": 320.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A5"
+      ],
+      "powerVariants": [
+        190.0
+      ]
+    },
+    {
+      "code": "CYRB",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1984.0,
+      "powerHp": 252.0,
+      "powerKw": 185.0,
+      "torqueNm": 370.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q7"
+      ],
+      "powerVariants": [
+        252.0
+      ]
+    },
+    {
+      "code": "DAXB",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1984.0,
+      "powerHp": 249.0,
+      "powerKw": 183.0,
+      "torqueNm": 370.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q5"
+      ],
+      "powerVariants": [
+        249.0
+      ]
+    },
+    {
+      "code": "DCB",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 2995.0,
+      "powerHp": 340.0,
+      "powerKw": 250.0,
+      "torqueNm": 500.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q7"
+      ],
+      "powerVariants": [
+        340.0
+      ]
+    },
+    {
+      "code": "DETB",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 1968.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 400.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q5"
+      ],
+      "powerVariants": []
+    },
+    {
+      "code": "DMF",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1984.0,
+      "powerHp": 245.0,
+      "powerKw": 180.0,
+      "torqueNm": 370.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q7"
+      ],
+      "powerVariants": [
+        245.0
+      ]
+    },
+    {
+      "code": "DMSA",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1984.0,
+      "powerHp": 204.0,
+      "powerKw": 150.0,
+      "torqueNm": 320.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A5"
+      ],
+      "powerVariants": [
+        204.0
+      ]
+    },
+    {
+      "code": "DNPA",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1984.0,
+      "powerHp": 249.0,
+      "powerKw": 183.0,
+      "torqueNm": 370.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A4",
+        "Audi A5"
+      ],
+      "powerVariants": [
+        249.0
+      ]
+    },
+    {
+      "code": "DTP",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 1968.0,
+      "powerHp": 204.0,
+      "powerKw": 150.0,
+      "torqueNm": 400.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q5"
+      ],
+      "powerVariants": [
+        204.0
+      ]
+    },
+    {
+      "code": "DXG",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1984.0,
+      "powerHp": 272.0,
+      "powerKw": 200.0,
+      "torqueNm": 400.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi A6"
+      ],
+      "powerVariants": [
+        272.0
+      ]
+    },
+    {
+      "code": "VW EA888",
+      "make": "Audi",
+      "fuel": "Gasoline",
+      "volumeCcm": 1984.0,
+      "powerHp": 272.0,
+      "powerKw": 200.0,
+      "torqueNm": 400.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q5"
+      ],
+      "powerVariants": [
+        272.0
+      ]
+    },
+    {
+      "code": "VW EA897EVO2",
+      "make": "Audi",
+      "fuel": "Diesel",
+      "volumeCcm": 2967.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 500.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "Audi Q5"
+      ],
+      "powerVariants": []
+    },
+    {
+      "code": "B38A15",
+      "make": "BMW",
+      "fuel": "Hybrid",
+      "volumeCcm": 1499.0,
+      "powerHp": 245.0,
+      "powerKw": 180.0,
+      "torqueNm": 477.0,
+      "cylinders": 3.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW X1"
+      ],
+      "powerVariants": [
+        245.0
+      ]
+    },
+    {
+      "code": "B47D20",
+      "make": "BMW",
+      "fuel": "Diesel",
+      "volumeCcm": 1995.0,
+      "powerHp": 163.0,
+      "powerKw": 120.0,
+      "torqueNm": 400.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW X1",
+        "BMW X3"
+      ],
+      "powerVariants": [
+        163.0
+      ]
+    },
+    {
+      "code": "B48B20",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 1998.0,
+      "powerHp": 245.0,
+      "powerKw": 180.0,
+      "torqueNm": 400.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW 3 series",
+        "BMW 5 series",
+        "BMW X1",
+        "BMW X3"
+      ],
+      "powerVariants": [
+        245.0,
+        204.0,
+        249.0
+      ]
+    },
+    {
+      "code": "B48B20D",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 1998.0,
+      "powerHp": 252.0,
+      "powerKw": 185.0,
+      "torqueNm": 350.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW 5 series"
+      ],
+      "powerVariants": [
+        252.0
+      ]
+    },
+    {
+      "code": "B57D30",
+      "make": "BMW",
+      "fuel": "Diesel",
+      "volumeCcm": 2993.0,
+      "powerHp": 286.0,
+      "powerKw": 210.0,
+      "torqueNm": 650.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW 5 series",
+        "BMW X3",
+        "BMW X5"
+      ],
+      "powerVariants": [
+        286.0,
+        249.0
+      ]
+    },
+    {
+      "code": "B58B30",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 2998.0,
+      "powerHp": 393.0,
+      "powerKw": 293.0,
+      "torqueNm": 428.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW X3",
+        "BMW X5"
+      ],
+      "powerVariants": [
+        393.0,
+        333.0
+      ]
+    },
+    {
+      "code": "M54B30",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 2979.0,
+      "powerHp": 231.0,
+      "powerKw": 170.0,
+      "torqueNm": 300.0,
+      "cylinders": 6.0,
+      "boost": null,
+      "yearBegin": 2000,
+      "yearEnd": 2003,
+      "models": [
+        "BMW X5"
+      ],
+      "powerVariants": [
+        231.0
+      ]
+    },
+    {
+      "code": "M57D30",
+      "make": "BMW",
+      "fuel": "Diesel",
+      "volumeCcm": 2993.0,
+      "powerHp": 286.0,
+      "powerKw": 210.0,
+      "torqueNm": 580.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": 2004,
+      "yearEnd": 2006,
+      "models": [
+        "BMW 3 series",
+        "BMW X3"
+      ],
+      "powerVariants": [
+        286.0,
+        218.0
+      ]
+    },
+    {
+      "code": "N20B20",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 1997.0,
+      "powerHp": 245.0,
+      "powerKw": 180.0,
+      "torqueNm": 350.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": 2014,
+      "yearEnd": null,
+      "models": [
+        "BMW X3"
+      ],
+      "powerVariants": [
+        245.0
+      ]
+    },
+    {
+      "code": "N43B20",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 1995.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 210.0,
+      "cylinders": 4.0,
+      "boost": null,
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW 1 series"
+      ],
+      "powerVariants": []
+    },
+    {
+      "code": "N46B20",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 1995.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 200.0,
+      "cylinders": 4.0,
+      "boost": null,
+      "yearBegin": 2012,
+      "yearEnd": 2015,
+      "models": [
+        "BMW 1 series",
+        "BMW X1"
+      ],
+      "powerVariants": [
+        150.0
+      ]
+    },
+    {
+      "code": "N47D20",
+      "make": "BMW",
+      "fuel": "Diesel",
+      "volumeCcm": 1995.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 350.0,
+      "cylinders": 4.0,
+      "boost": "Turbocharged",
+      "yearBegin": 2009,
+      "yearEnd": 2012,
+      "models": [
+        "BMW 1 series",
+        "BMW X1",
+        "BMW X3"
+      ],
+      "powerVariants": [
+        177.0,
+        204.0,
+        184.0
+      ]
+    },
+    {
+      "code": "N52B25",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 2497.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 250.0,
+      "cylinders": 6.0,
+      "boost": null,
+      "yearBegin": 2006,
+      "yearEnd": 2010,
+      "models": [
+        "BMW 3 series",
+        "BMW X3"
+      ],
+      "powerVariants": [
+        218.0
+      ]
+    },
+    {
+      "code": "N52B30",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 2996.0,
+      "powerHp": 264.0,
+      "powerKw": null,
+      "torqueNm": 305.0,
+      "cylinders": 6.0,
+      "boost": null,
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW X3",
+        "BMW X5"
+      ],
+      "powerVariants": [
+        264.0
+      ]
+    },
+    {
+      "code": "N53B30",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 2996.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 270.0,
+      "cylinders": 6.0,
+      "boost": null,
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW 3 series",
+        "BMW 5 series"
+      ],
+      "powerVariants": []
+    },
+    {
+      "code": "N54B30",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 2979.0,
+      "powerHp": null,
+      "powerKw": null,
+      "torqueNm": 400.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW 3 series"
+      ],
+      "powerVariants": []
+    },
+    {
+      "code": "N55B30",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 2979.0,
+      "powerHp": 306.0,
+      "powerKw": 225.0,
+      "torqueNm": 400.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": null,
+      "yearEnd": null,
+      "models": [
+        "BMW X5"
+      ],
+      "powerVariants": [
+        306.0
+      ]
+    },
+    {
+      "code": "N57D30",
+      "make": "BMW",
+      "fuel": "Diesel",
+      "volumeCcm": 2993.0,
+      "powerHp": 258.0,
+      "powerKw": 190.0,
+      "torqueNm": 560.0,
+      "cylinders": 6.0,
+      "boost": "Turbocharged",
+      "yearBegin": 2013,
+      "yearEnd": null,
+      "models": [
+        "BMW 5 series",
+        "BMW X5"
+      ],
+      "powerVariants": [
+        258.0
+      ]
+    },
+    {
+      "code": "N62B44",
+      "make": "BMW",
+      "fuel": "Gasoline",
+      "volumeCcm": 4398.0,
+      "powerHp": 320.0,
+      "powerKw": 235.0,
+      "torqueNm": 440.0,
+      "cylinders": 8.0,
+      "boost": null,
+      "yearBegin": 2003,
+      "yearEnd": 2006,
+      "models": [
+        "BMW X5"
+      ],
+      "powerVariants": [
+        320.0
+      ]
+    }
+  ]
+}

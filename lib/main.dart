@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'models/dtc_code.dart';
+import 'models/engine_specs.dart';
 import 'package:provider/provider.dart';
 import 'screens/main_tab_screen.dart';
 import 'services/datalogger_service.dart';
@@ -18,6 +19,11 @@ Future<void> main() async {
   try {
     DtcCode.loadDescriptions(await rootBundle.loadString("assets/dtc/obd_descriptions_en.json"));
     DtcCode.loadVagDescriptions(await rootBundle.loadString("assets/dtc/vag_fault_codes_en.json"));
+  } catch (_) {}
+
+  // Specyfikacje silników po kodzie (car2db, offline) — dane do karty silnika i raportu
+  try {
+    EngineSpecs.loadFromJson(await rootBundle.loadString("assets/data/engine_specs.json"));
   } catch (_) {}
 
   final obdService = ObdService();
