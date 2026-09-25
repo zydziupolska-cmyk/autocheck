@@ -373,6 +373,252 @@ class DtcCode {
         "Sprawdź płynność ruchu grzybka zaworu.",
       ],
     ),
+
+    // === Rozszerzona baza najczęstszych kodów (opisy własne, wiedza ogólna) ===
+    "P0088": const DtcCode(
+      code: "P0088",
+      title: "Za wysokie ciśnienie paliwa na szynie (Fuel Rail Pressure Too High)",
+      category: "Układ wtryskowy wysokiego ciśnienia",
+      description: "Ciśnienie na listwie paliwowej przekroczyło wartość zadaną — regulacja ciśnienia nie utrzymuje zadanego poziomu.",
+      commonCauses: [
+        "Zacięty lub uszkodzony zawór regulacji ciśnienia (regulator na pompie lub na szynie)",
+        "Zablokowany spływ paliwa / zawór nadmiarowy",
+        "Błędny sygnał z czujnika ciśnienia szyny (zawyżony)",
+        "Uszkodzone okablowanie zaworu regulacji",
+      ],
+      diagnosticsSteps: [
+        "Porównaj ciśnienie zadane i rzeczywiste w danych bieżących pod obciążeniem.",
+        "Sprawdź sterowanie zaworem regulacji (wypełnienie) i jego reakcję.",
+        "Skontroluj okablowanie i wtyczki zaworu oraz czujnika ciśnienia.",
+      ],
+    ),
+    "P0102": const DtcCode(
+      code: "P0102",
+      title: "Za niski sygnał przepływomierza powietrza (MAF Circuit Low)",
+      category: "Pomiar powietrza dolotowego",
+      description: "Sygnał z przepływomierza masowego powietrza jest niższy niż oczekiwany dla danych warunków pracy.",
+      commonCauses: [
+        "Zabrudzony element pomiarowy przepływomierza",
+        "Nieszczelność dolotu za przepływomierzem (fałszywe powietrze)",
+        "Zapchany filtr powietrza",
+        "Uszkodzony przepływomierz lub jego okablowanie",
+      ],
+      diagnosticsSteps: [
+        "Porównaj odczyt MAF (g/s) z wartością wzorcową dla obrotów jałowych i pełnego gazu.",
+        "Sprawdź szczelność całego układu dolotowego i stan filtra powietrza.",
+        "W razie potrzeby porównaj z nowym/sprawnym przepływomierzem.",
+      ],
+    ),
+    "P0113": const DtcCode(
+      code: "P0113",
+      title: "Za wysoki sygnał czujnika temperatury powietrza dolotowego (IAT Circuit High)",
+      category: "Pomiar powietrza dolotowego",
+      description: "Sygnał czujnika temperatury powietrza wskazuje wartość odpowiadającą bardzo niskiej temperaturze / przerwie w obwodzie.",
+      commonCauses: [
+        "Przerwa w obwodzie lub skorodowana wtyczka czujnika IAT",
+        "Uszkodzony czujnik (często zintegrowany z przepływomierzem)",
+        "Uszkodzone okablowanie",
+      ],
+      diagnosticsSteps: [
+        "Porównaj odczyt IAT z temperaturą otoczenia na zimnym silniku.",
+        "Sprawdź ciągłość przewodów i stan wtyczki czujnika.",
+      ],
+    ),
+    "P0128": const DtcCode(
+      code: "P0128",
+      title: "Temperatura płynu poniżej progu regulacji termostatu (Coolant Thermostat)",
+      category: "Układ chłodzenia",
+      description: "Silnik nie osiąga w wymaganym czasie temperatury roboczej — termostat prawdopodobnie nie domyka się poprawnie.",
+      commonCauses: [
+        "Zawieszony w pozycji otwartej termostat",
+        "Uszkodzony czujnik temperatury płynu",
+        "Zbyt niski poziom płynu lub problem z obiegiem",
+      ],
+      diagnosticsSteps: [
+        "Obserwuj wzrost temperatury płynu po rozruchu — czy dochodzi do ~90°C w rozsądnym czasie.",
+        "Dotykowo sprawdź, kiedy otwiera się obieg górny (chłodnica).",
+        "Zweryfikuj wskazania czujnika temperatury z rzeczywistością.",
+      ],
+    ),
+    "P0133": const DtcCode(
+      code: "P0133",
+      title: "Wolna reakcja sondy lambda 1 (O2 Sensor Slow Response B1S1)",
+      category: "Układ paliwowy / sondy lambda",
+      description: "Sonda lambda przed katalizatorem reaguje zbyt wolno na zmiany składu mieszanki — traci sprawność.",
+      commonCauses: [
+        "Zestarzona / zanieczyszczona sonda lambda przed katalizatorem",
+        "Nieszczelność układu wydechowego przed sondą (zasysanie powietrza)",
+        "Zanieczyszczenie sondy (olej, płyn, dodatki paliwowe)",
+      ],
+      diagnosticsSteps: [
+        "Oceń przebieg napięcia/lambdy sondy przedniej — powinien szybko oscylować.",
+        "Sprawdź szczelność wydechu przed sondą.",
+        "Porównaj sondę przednią z tylną w danych bieżących.",
+      ],
+    ),
+    "P0340": const DtcCode(
+      code: "P0340",
+      title: "Obwód czujnika położenia wałka rozrządu (Camshaft Position Sensor Circuit)",
+      category: "Czujniki / synchronizacja",
+      description: "Sterownik utracił lub odczytał nieprawidłowy sygnał czujnika położenia wałka rozrządu.",
+      commonCauses: [
+        "Uszkodzony czujnik położenia wałka",
+        "Uszkodzone okablowanie lub wtyczka",
+        "Zanieczyszczony/uszkodzony wieniec (koło impulsowe)",
+        "Zakłócenia od źle poprowadzonych przewodów",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź sygnał czujnika przy rozruchu i pracy.",
+        "Skontroluj wtyczkę i przewody czujnika.",
+      ],
+    ),
+    "P0380": const DtcCode(
+      code: "P0380",
+      title: "Obwód świec żarowych (Glow Plug Circuit A)",
+      category: "Układ rozruchu (diesel)",
+      description: "Wykryto usterkę w obwodzie sterowania świec żarowych — częsty powód utrudnionego rozruchu na zimno i kontrolki żarzenia.",
+      commonCauses: [
+        "Przepalona jedna lub kilka świec żarowych",
+        "Uszkodzony moduł sterujący świecami (przekaźnik/sterownik żarzenia)",
+        "Uszkodzone okablowanie / korozja na szynie zasilającej świece",
+      ],
+      diagnosticsSteps: [
+        "Zmierz rezystancję poszczególnych świec żarowych.",
+        "Sprawdź napięcie zasilania na świecach podczas żarzenia.",
+        "Odczytaj, które świece moduł zgłasza jako uszkodzone (dane bieżące).",
+      ],
+    ),
+    "P0402": const DtcCode(
+      code: "P0402",
+      title: "Nadmierny przepływ recyrkulacji spalin (EGR Flow Excessive)",
+      category: "Układ recyrkulacji spalin EGR",
+      description: "Zawór EGR przepuszcza więcej spalin niż wynika z zadania — często zacięty w pozycji otwartej.",
+      commonCauses: [
+        "Zawór EGR zacięty w pozycji otwartej (nagar)",
+        "Uszkodzony element wykonawczy / silniczek zaworu",
+        "Błędny sygnał czujnika położenia zaworu",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź położenie zadane vs rzeczywiste zaworu EGR w danych bieżących.",
+        "Zdemontuj i oczyść zawór, oceń swobodę ruchu grzybka.",
+      ],
+    ),
+    "P0420": const DtcCode(
+      code: "P0420",
+      title: "Niska sprawność katalizatora (Catalyst Efficiency Below Threshold B1)",
+      category: "Układ oczyszczania spalin",
+      description: "Porównanie sond lambda przed i za katalizatorem wskazuje, że katalizator nie magazynuje tlenu tak jak powinien — spadek sprawności.",
+      commonCauses: [
+        "Zużyty / uszkodzony katalizator (przegrzany, zatkany, wypłukany)",
+        "Nieszczelność wydechu w pobliżu sond",
+        "Zestarzona tylna sonda lambda",
+        "Długotrwała praca na bogatej/ubogiej mieszance lub spalanie oleju",
+      ],
+      diagnosticsSteps: [
+        "Porównaj przebiegi sondy przedniej i tylnej — tylna nie powinna kopiować przedniej.",
+        "Sprawdź szczelność wydechu przy sondach.",
+        "Wyklucz przyczyny mieszanki (korekty, wypadanie) przed wymianą katalizatora.",
+      ],
+    ),
+    "P0455": const DtcCode(
+      code: "P0455",
+      title: "Duża nieszczelność układu odprowadzania par paliwa (EVAP Large Leak)",
+      category: "Układ EVAP (benzyna)",
+      description: "System wykrył dużą nieszczelność w układzie odprowadzania par paliwa — najczęściej po stronie korka wlewu lub węży.",
+      commonCauses: [
+        "Niedokręcony lub nieszczelny korek wlewu paliwa",
+        "Pęknięty / odłączony wąż układu EVAP",
+        "Uszkodzony zawór odpowietrzania kanistra (przewietrzania)",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź i dokręć korek wlewu; skasuj kod i obserwuj powrót.",
+        "Skontroluj węże EVAP pod kątem pęknięć i rozłączeń.",
+        "W razie potrzeby wykonaj próbę szczelności (dymem) układu EVAP.",
+      ],
+    ),
+    "P0562": const DtcCode(
+      code: "P0562",
+      title: "Za niskie napięcie zasilania (System Voltage Low)",
+      category: "Zasilanie / ładowanie",
+      description: "Napięcie pokładowe jest niższe od wymaganego — problem z ładowaniem lub akumulatorem.",
+      commonCauses: [
+        "Zużyty akumulator lub poluzowane/utlenione klemy",
+        "Uszkodzony alternator lub regulator napięcia",
+        "Rozciągnięty / ślizgający się pasek osprzętu",
+        "Zwiększona rezystancja masy / przewodów zasilania",
+      ],
+      diagnosticsSteps: [
+        "Zmierz napięcie na akumulatorze na postoju i przy pracy silnika (~14 V).",
+        "Sprawdź stan i naciąg paska osprzętu.",
+        "Skontroluj klemy i połączenia masy.",
+      ],
+    ),
+    "P2015": const DtcCode(
+      code: "P2015",
+      title: "Klapy wirowe / czujnik położenia klap kolektora ssącego (Intake Runner Position)",
+      category: "Kolektor dolotowy",
+      description: "Sterownik wykrył niezgodność położenia klap wirowych kolektora ssącego z zadaniem — bardzo częsta usterka kolektorów z klapami wirowymi.",
+      commonCauses: [
+        "Wyłamana / poluzowana dźwignia klap wirowych w kolektorze",
+        "Zużyty potencjometr położenia klap (często niewymienny osobno)",
+        "Zablokowane nagarem klapy wirowe",
+        "Uszkodzony silniczek sterujący klapami",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź w danych bieżących położenie zadane vs rzeczywiste klap.",
+        "Oceń mechanicznie ruch dźwigni klap na kolektorze.",
+        "Przy wyłamanej dźwigni zwykle konieczna wymiana kolektora / naprawa zestawem.",
+      ],
+    ),
+    "P244A": const DtcCode(
+      code: "P244A",
+      title: "Za mała różnica ciśnień na filtrze DPF (DPF Differential Pressure Too Low)",
+      category: "Filtr cząstek stałych DPF",
+      description: "Różnica ciśnień na filtrze cząstek stałych jest niższa niż oczekiwana — sygnał możliwego uszkodzenia filtra lub układu pomiaru.",
+      commonCauses: [
+        "Uszkodzony / przepalony wkład DPF (utrata materiału filtrującego)",
+        "Nieszczelność lub rozłączenie wężyków czujnika różnicy ciśnień",
+        "Błędny odczyt czujnika różnicy ciśnień",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź odczyt różnicy ciśnień DPF w danych bieżących pod obciążeniem.",
+        "Skontroluj wężyki pomiarowe pod kątem pęknięć i poprawnego podłączenia.",
+        "Oceń stan wkładu DPF (możliwe wypalenie/uszkodzenie).",
+      ],
+    ),
+    "P244B": const DtcCode(
+      code: "P244B",
+      title: "Za duża różnica ciśnień na filtrze DPF (DPF Differential Pressure Too High)",
+      category: "Filtr cząstek stałych DPF",
+      description: "Różnica ciśnień na DPF jest wyższa niż dopuszczalna — filtr jest mocno zapełniony sadzą/popiołem lub zatkany.",
+      commonCauses: [
+        "Zatkany filtr DPF (nadmiar sadzy — nieudane regeneracje) lub popiołu (przebieg)",
+        "Częsta jazda miejska uniemożliwiająca regenerację",
+        "Usterka obniżająca temperaturę spalin (EGR, wtryskiwacze) blokująca regenerację",
+      ],
+      diagnosticsSteps: [
+        "Odczytaj poziom sadzy i popiołu oraz przebieg od ostatniej regeneracji.",
+        "Sprawdź, czy regeneracje dochodzą do końca (temperatury spalin).",
+        "Wyklucz usterki towarzyszące (EGR, ciśnienie doładowania, wtrysk) przed czyszczeniem/wymianą.",
+      ],
+    ),
+    "P204F": const DtcCode(
+      code: "P204F",
+      title: "Nieprawidłowe działanie układu SCR / AdBlue (Reductant System Performance)",
+      category: "Układ SCR (AdBlue)",
+      description: "Układ selektywnej redukcji katalitycznej (SCR/AdBlue) nie działa w zakresie oczekiwanym — problem z dozowaniem lub jakością reduktora.",
+      commonCauses: [
+        "Zła jakość / rozcieńczony AdBlue lub skrystalizowany reduktor",
+        "Uszkodzona pompa lub wtryskiwacz AdBlue",
+        "Uszkodzony czujnik NOx",
+        "Zatkany / uszkodzony katalizator SCR",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź jakość i poziom AdBlue oraz ciśnienie w układzie dozowania.",
+        "Odczytaj wartości czujników NOx przed i za SCR w danych bieżących.",
+        "Skontroluj wtryskiwacz reduktora pod kątem krystalizacji.",
+      ],
+    ),
   };
 
   /// Opisy kodów (angielskie) z pliku danych — wczytywane przy starcie aplikacji.
