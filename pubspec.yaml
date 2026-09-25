@@ -71,6 +71,7 @@ flutter:
     - assets/dtc/obd_descriptions_en.json
     - assets/dtc/vag_fault_codes_en.json
     - assets/data/engine_specs.json
+    - assets/data/dtc_pl.json
 
   # To add assets to your application, add an assets section, like this:
   # assets:

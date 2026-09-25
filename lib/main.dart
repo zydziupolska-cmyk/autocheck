@@ -11,6 +11,7 @@ import 'services/sniff_service.dart';
 import 'services/coding_service.dart';
 import 'services/engine_memory.dart';
 import 'services/fault_notes.dart';
+import 'services/dtc_user_descriptions.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -20,6 +21,7 @@ Future<void> main() async {
   try {
     DtcCode.loadDescriptions(await rootBundle.loadString("assets/dtc/obd_descriptions_en.json"));
     DtcCode.loadVagDescriptions(await rootBundle.loadString("assets/dtc/vag_fault_codes_en.json"));
+    DtcCode.loadPlDescriptions(await rootBundle.loadString("assets/data/dtc_pl.json"));
   } catch (_) {}
 
   // Specyfikacje silników po kodzie (car2db, offline) — dane do karty silnika i raportu
@@ -30,6 +32,7 @@ Future<void> main() async {
   final obdService = ObdService();
   final engineMemory = EngineMemory();
   final faultNotes = FaultNotes();
+  final dtcUserDescriptions = DtcUserDescriptions();
   final dataloggerService = DataloggerService(obdService: obdService, engineMemory: engineMemory);
   final definitionsStore = PidDefinitionsStore(obd: obdService);
   final sniffService = SniffService(obd: obdService);
@@ -45,6 +48,7 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: codingService),
         ChangeNotifierProvider.value(value: engineMemory),
         ChangeNotifierProvider.value(value: faultNotes),
+        ChangeNotifierProvider.value(value: dtcUserDescriptions),
       ],
       child: const DynomicDiagApp(),
     ),

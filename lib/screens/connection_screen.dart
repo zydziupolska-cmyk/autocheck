@@ -8,6 +8,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
 import 'package:provider/provider.dart';
 import '../models/dtc_code.dart';
+import '../services/dtc_user_descriptions.dart';
 import '../services/obd_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui.dart';
@@ -673,8 +674,85 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 child: Text("• $c", style: const TextStyle(fontSize: 12.5)),
               ),
           ],
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              if (context.watch<DtcUserDescriptions>().has(dtc.code))
+                Container(
+                  margin: const EdgeInsets.only(right: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accent.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text("opis własny", style: TextStyle(color: AppTheme.accent, fontSize: 10.5, fontWeight: FontWeight.w700)),
+                ),
+              TextButton.icon(
+                onPressed: () => _editDtcDescription(dtc),
+                icon: const Icon(Icons.edit_note, size: 18),
+                label: Text(context.read<DtcUserDescriptions>().has(dtc.code) ? "Edytuj opis" : "Dodaj własny opis"),
+                style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
+              ),
+            ],
+          ),
         ],
       ),
     );
+  }
+
+  Future<void> _editDtcDescription(DtcCode dtc) async {
+    final store = context.read<DtcUserDescriptions>();
+    final existing = store.forCode(dtc.code);
+    final titleCtrl = TextEditingController(text: (existing?["title"] ?? dtc.title).toString());
+    final descCtrl = TextEditingController(text: (existing?["description"] ?? dtc.description).toString());
+    final causesCtrl = TextEditingController(
+        text: [for (final c in (existing?["commonCauses"] as List? ?? dtc.commonCauses)) c.toString()].join("\n"));
+    final stepsCtrl = TextEditingController(
+        text: [for (final s in (existing?["diagnosticsSteps"] as List? ?? dtc.diagnosticsSteps)) s.toString()].join("\n"));
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text("Własny opis — ${dtc.code}", style: const TextStyle(fontSize: 16)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: titleCtrl, textCapitalization: TextCapitalization.sentences,
+                  decoration: const InputDecoration(labelText: "Nazwa usterki")),
+              const SizedBox(height: 8),
+              TextField(controller: descCtrl, minLines: 2, maxLines: 4, textCapitalization: TextCapitalization.sentences,
+                  decoration: const InputDecoration(labelText: "Opis (prostym językiem)")),
+              const SizedBox(height: 8),
+              TextField(controller: causesCtrl, minLines: 2, maxLines: 5, textCapitalization: TextCapitalization.sentences,
+                  decoration: const InputDecoration(labelText: "Przyczyny (każda w nowej linii)")),
+              const SizedBox(height: 8),
+              TextField(controller: stepsCtrl, minLines: 2, maxLines: 5, textCapitalization: TextCapitalization.sentences,
+                  decoration: const InputDecoration(labelText: "Co sprawdzić (każde w nowej linii)")),
+            ],
+          ),
+        ),
+        actions: [
+          if (existing != null)
+            TextButton(onPressed: () => Navigator.pop(ctx, "delete"),
+                child: const Text("Usuń", style: TextStyle(color: AppTheme.fault))),
+          TextButton(onPressed: () => Navigator.pop(ctx, "cancel"), child: const Text("Anuluj")),
+          FilledButton(onPressed: () => Navigator.pop(ctx, "save"), child: const Text("Zapisz")),
+        ],
+      ),
+    );
+    if (action == "save") {
+      List<String> lines(String s) => s.split("\n").map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      await store.set(dtc.code,
+          title: titleCtrl.text,
+          category: dtc.category,
+          description: descCtrl.text,
+          commonCauses: lines(causesCtrl.text),
+          diagnosticsSteps: lines(stepsCtrl.text));
+      if (mounted) setState(() {});
+    } else if (action == "delete") {
+      await store.remove(dtc.code);
+      if (mounted) setState(() {});
+    }
   }
 }

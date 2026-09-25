@@ -12,6 +12,7 @@ import 'package:autocheck/main.dart';
 import 'package:autocheck/services/pid_definitions_store.dart';
 import 'package:autocheck/services/engine_memory.dart';
 import 'package:autocheck/services/fault_notes.dart';
+import 'package:autocheck/services/dtc_user_descriptions.dart';
 
 import 'package:autocheck/models/extended_pid.dart';
 
@@ -114,6 +115,7 @@ void main() {
           ChangeNotifierProvider.value(value: definitionsStore),
           ChangeNotifierProvider.value(value: EngineMemory(persist: false)),
           ChangeNotifierProvider.value(value: FaultNotes(persist: false)),
+          ChangeNotifierProvider.value(value: DtcUserDescriptions(persist: false)),
         ],
         child: const DynomicDiagApp(),
       ),
