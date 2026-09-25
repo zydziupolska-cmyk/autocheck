@@ -606,17 +606,379 @@ class DtcCode {
       code: "P204F",
       title: "Nieprawidłowe działanie układu SCR / AdBlue (Reductant System Performance)",
       category: "Układ SCR (AdBlue)",
-      description: "Układ selektywnej redukcji katalitycznej (SCR/AdBlue) nie działa w zakresie oczekiwanym — problem z dozowaniem lub jakością reduktora.",
+      description: "Układ AdBlue (płyn, który oczyszcza spaliny diesla z tlenków azotu) nie działa jak powinien. Auto może wejść w tryb awaryjny albo nie da się go odpalić po kolejnym rozruchu, dopóki usterka nie zniknie.",
       commonCauses: [
-        "Zła jakość / rozcieńczony AdBlue lub skrystalizowany reduktor",
-        "Uszkodzona pompa lub wtryskiwacz AdBlue",
-        "Uszkodzony czujnik NOx",
-        "Zatkany / uszkodzony katalizator SCR",
+        "Zły lub rozcieńczony AdBlue albo zakrystalizowany płyn",
+        "Uszkodzona pompka lub wtryskiwacz AdBlue",
+        "Uszkodzony czujnik tlenków azotu (NOx)",
+        "Zużyty katalizator SCR",
       ],
       diagnosticsSteps: [
         "Sprawdź jakość i poziom AdBlue oraz ciśnienie w układzie dozowania.",
         "Odczytaj wartości czujników NOx przed i za SCR w danych bieżących.",
         "Skontroluj wtryskiwacz reduktora pod kątem krystalizacji.",
+      ],
+    ),
+
+    // === Uniwersalna baza kodów — opisy „dla Kowalskiego" (proste, każda marka, benzyna i diesel) ===
+    "P0100": const DtcCode(
+      code: "P0100",
+      title: "Przepływomierz powietrza — usterka (Mass Air Flow Circuit)",
+      category: "Pomiar powietrza dolotowego",
+      description: "Czujnik, który mierzy ile powietrza wpada do silnika, wysyła błędne dane. Silnik może szarpać, gorzej ciągnąć i palić więcej.",
+      commonCauses: [
+        "Zabrudzony lub zużyty przepływomierz",
+        "Poluzowana wtyczka lub uszkodzony przewód",
+        "Zassane nieszczelności w dolocie (fałszywe powietrze)",
+      ],
+      diagnosticsSteps: [
+        "Porównaj odczyt powietrza (g/s) z wartością wzorcową na jałowym i pełnym gazie.",
+        "Sprawdź wtyczkę i przewody czujnika.",
+        "Skontroluj szczelność dolotu i stan filtra powietrza.",
+      ],
+    ),
+    "P0107": const DtcCode(
+      code: "P0107",
+      title: "Czujnik ciśnienia w dolocie (MAP) — za niski sygnał",
+      category: "Pomiar powietrza dolotowego",
+      description: "Czujnik ciśnienia w kolektorze dolotowym pokazuje nierealnie niską wartość. Silnik może źle pracować i mieć słabsze osiągi.",
+      commonCauses: [
+        "Uszkodzony czujnik MAP",
+        "Przerwa w przewodzie lub skorodowana wtyczka",
+        "Zapchany lub odłączony wężyk podciśnienia",
+      ],
+      diagnosticsSteps: [
+        "Porównaj odczyt ciśnienia w dolocie z ciśnieniem atmosferycznym przy wyłączonym silniku.",
+        "Sprawdź wtyczkę, przewody i wężyk czujnika.",
+      ],
+    ),
+    "P0116": const DtcCode(
+      code: "P0116",
+      title: "Czujnik temperatury silnika — nieprawidłowy odczyt (ECT Range)",
+      category: "Układ chłodzenia",
+      description: "Czujnik temperatury płynu chłodzącego podaje dziwne wartości. Może to psuć spalanie i utrudniać rozruch na zimno.",
+      commonCauses: [
+        "Uszkodzony czujnik temperatury płynu",
+        "Zawieszony termostat (silnik grzeje się nietypowo)",
+        "Niski poziom płynu lub powietrze w układzie",
+      ],
+      diagnosticsSteps: [
+        "Porównaj temperaturę z odczytu z rzeczywistą na zimnym silniku.",
+        "Obserwuj wzrost temperatury po rozruchu.",
+      ],
+    ),
+    "P0122": const DtcCode(
+      code: "P0122",
+      title: "Czujnik położenia przepustnicy — za niski sygnał (TPS Low)",
+      category: "Przepustnica / sterowanie mocą",
+      description: "Sterownik nie wie dokładnie, jak mocno wciśnięto gaz, bo czujnik przepustnicy daje zły sygnał. Auto może przejść w tryb awaryjny (ograniczona moc).",
+      commonCauses: [
+        "Uszkodzony potencjometr / moduł przepustnicy",
+        "Uszkodzony przewód lub wtyczka",
+        "Zabrudzona przepustnica",
+      ],
+      diagnosticsSteps: [
+        "Obserwuj sygnał przepustnicy przy wciskaniu gazu w danych bieżących.",
+        "Sprawdź wtyczkę i przewody przepustnicy.",
+      ],
+    ),
+    "P0130": const DtcCode(
+      code: "P0130",
+      title: "Sonda lambda przed katalizatorem — usterka (O2 B1S1)",
+      category: "Sondy lambda / spalanie",
+      description: "Główna sonda mierząca skład spalin działa źle. Silnik może palić więcej i nierówno chodzić, świeci 'check engine'.",
+      commonCauses: [
+        "Zużyta lub zanieczyszczona sonda lambda",
+        "Uszkodzone okablowanie lub grzałka sondy",
+        "Nieszczelność wydechu przy sondzie",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź, czy sygnał sondy ładnie oscyluje po nagrzaniu.",
+        "Skontroluj przewody i szczelność wydechu przy sondzie.",
+      ],
+    ),
+    "P0135": const DtcCode(
+      code: "P0135",
+      title: "Grzałka sondy lambda przed katalizatorem — usterka (O2 Heater B1S1)",
+      category: "Sondy lambda / spalanie",
+      description: "Podgrzewanie sondy lambda nie działa, więc sonda za wolno zaczyna działać po odpaleniu. Zwiększone spalanie do czasu nagrzania.",
+      commonCauses: [
+        "Przepalona grzałka w sondzie",
+        "Przepalony bezpiecznik lub uszkodzony przewód zasilania grzałki",
+      ],
+      diagnosticsSteps: [
+        "Zmierz rezystancję grzałki sondy.",
+        "Sprawdź zasilanie grzałki i bezpiecznik.",
+      ],
+    ),
+    "P0137": const DtcCode(
+      code: "P0137",
+      title: "Sonda lambda za katalizatorem — za niski sygnał (O2 B1S2)",
+      category: "Sondy lambda / spalanie",
+      description: "Sonda kontrolna za katalizatorem pokazuje zaniżoną wartość. Zwykle nie czuć tego w jeździe, ale świeci kontrolka i może nie przejść badania.",
+      commonCauses: [
+        "Zużyta tylna sonda lambda",
+        "Nieszczelność wydechu za katalizatorem",
+        "Uszkodzone okablowanie",
+      ],
+      diagnosticsSteps: [
+        "Porównaj sondę tylną z przednią w danych bieżących.",
+        "Sprawdź szczelność wydechu za katalizatorem.",
+      ],
+    ),
+    "P0201": const DtcCode(
+      code: "P0201",
+      title: "Obwód wtryskiwacza cylindra 1 (Injector Circuit Cyl. 1)",
+      category: "Układ wtryskowy",
+      description: "Sterownik zgłasza problem elektryczny z wtryskiwaczem 1. cylindra. Silnik może szarpać, gubić moc albo zapalać się na kontrolce.",
+      commonCauses: [
+        "Uszkodzony wtryskiwacz cylindra 1",
+        "Przetarty przewód lub luźna wtyczka wtryskiwacza",
+        "Uszkodzenie w sterowniku (rzadziej)",
+      ],
+      diagnosticsSteps: [
+        "Zmierz rezystancję wtryskiwacza i sprawdź jego wtyczkę.",
+        "Sprawdź sygnał sterujący wtryskiwaczem.",
+      ],
+    ),
+    "P0327": const DtcCode(
+      code: "P0327",
+      title: "Czujnik spalania stukowego — za niski sygnał (Knock Sensor Low)",
+      category: "Zapłon / spalanie stukowe",
+      description: "Czujnik, który wykrywa 'stukanie' silnika, daje zły sygnał. Sterownik dla bezpieczeństwa zmniejsza zapłon, więc auto ma mniej mocy i pali więcej.",
+      commonCauses: [
+        "Uszkodzony czujnik stukowy",
+        "Poluzowany czujnik (zły moment dokręcenia)",
+        "Uszkodzone okablowanie / wtyczka",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź dokręcenie i stan czujnika stukowego.",
+        "Skontroluj przewody i wtyczkę.",
+      ],
+    ),
+    "P0335": const DtcCode(
+      code: "P0335",
+      title: "Czujnik położenia wału korbowego — usterka (Crankshaft Sensor)",
+      category: "Czujniki / rozruch",
+      description: "Sterownik gubi sygnał o położeniu wału korbowego. Auto może gasnąć, nie odpalać albo zapalać się z opóźnieniem.",
+      commonCauses: [
+        "Uszkodzony czujnik wału korbowego",
+        "Uszkodzone okablowanie lub wtyczka",
+        "Uszkodzony wieniec / koło impulsowe",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź sygnał czujnika przy próbie rozruchu.",
+        "Skontroluj wtyczkę i przewody czujnika.",
+      ],
+    ),
+    "P0351": const DtcCode(
+      code: "P0351",
+      title: "Obwód cewki zapłonowej cylindra 1 (Ignition Coil 1)",
+      category: "Układ zapłonowy (benzyna)",
+      description: "Problem z cewką zapłonową 1. cylindra. Silnik szarpie, traci moc, może 'kłuć' na kontrolce (mruga check engine).",
+      commonCauses: [
+        "Uszkodzona cewka zapłonowa cylindra 1",
+        "Zużyta świeca zapłonowa",
+        "Uszkodzony przewód / wtyczka cewki",
+      ],
+      diagnosticsSteps: [
+        "Zamień cewkę z sąsiednim cylindrem i sprawdź, czy błąd wędruje.",
+        "Sprawdź świecę i wtyczkę cewki.",
+      ],
+    ),
+    "P0404": const DtcCode(
+      code: "P0404",
+      title: "Zawór EGR — nieprawidłowe działanie (EGR Range/Performance)",
+      category: "Recyrkulacja spalin EGR",
+      description: "Zawór zawracający część spalin (EGR) nie ustawia się tak, jak każe sterownik — często zakleja go nagar. Może być większe spalanie, dymienie lub tryb awaryjny.",
+      commonCauses: [
+        "Zawór EGR zakoksowany / zacięty",
+        "Uszkodzony silniczek lub czujnik położenia zaworu",
+        "Zabrudzone kanały EGR w kolektorze",
+      ],
+      diagnosticsSteps: [
+        "Porównaj położenie zadane i rzeczywiste zaworu EGR.",
+        "Zdemontuj i oczyść zawór, oceń ruch grzybka.",
+      ],
+    ),
+    "P0411": const DtcCode(
+      code: "P0411",
+      title: "Układ wtórnego powietrza — zły przepływ (Secondary Air Injection)",
+      category: "Układ oczyszczania spalin (benzyna)",
+      description: "Układ dodmuchujący powietrze do wydechu po zimnym rozruchu (dla szybszego oczyszczania spalin) nie działa prawidłowo. Zwykle tylko świeci kontrolka.",
+      commonCauses: [
+        "Uszkodzona pompa wtórnego powietrza",
+        "Zapchane kanały lub zawór (nagar/kondensat)",
+        "Uszkodzony zawór odcinający lub jego sterowanie",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź działanie pompy wtórnego powietrza po zimnym rozruchu.",
+        "Skontroluj drożność kanałów i zawór odcinający.",
+      ],
+    ),
+    "P0442": const DtcCode(
+      code: "P0442",
+      title: "Mała nieszczelność układu par paliwa (EVAP Small Leak)",
+      category: "Układ EVAP (benzyna)",
+      description: "Układ, który zbiera opary paliwa z baku, ma małą nieszczelność. Auto jeździ normalnie — najczęściej winny jest źle dokręcony korek wlewu.",
+      commonCauses: [
+        "Niedokręcony lub zużyty korek wlewu paliwa",
+        "Drobne pęknięcie węża EVAP",
+        "Nieszczelny zawór odpowietrzania",
+      ],
+      diagnosticsSteps: [
+        "Dokręć/wymień korek wlewu i skasuj kod.",
+        "Sprawdź węże EVAP; w razie potrzeby próba dymowa.",
+      ],
+    ),
+    "P0480": const DtcCode(
+      code: "P0480",
+      title: "Sterowanie wentylatorem chłodnicy — usterka (Cooling Fan 1)",
+      category: "Układ chłodzenia",
+      description: "Problem ze sterowaniem wentylatorem chłodnicy. Grozi przegrzaniem w korku lub na postoju z klimatyzacją.",
+      commonCauses: [
+        "Uszkodzony wentylator lub jego przekaźnik / sterownik",
+        "Przepalony bezpiecznik",
+        "Uszkodzone okablowanie",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź, czy wentylator załącza się przy wysokiej temperaturze / włączonej klimie.",
+        "Skontroluj bezpiecznik, przekaźnik i przewody.",
+      ],
+    ),
+    "P0500": const DtcCode(
+      code: "P0500",
+      title: "Czujnik prędkości pojazdu — brak sygnału (Vehicle Speed Sensor)",
+      category: "Czujniki / sterowanie",
+      description: "Sterownik nie wie, jak szybko jedzie auto. Może nie działać prędkościomierz, tempomat, a skrzynia automatyczna może dziwnie zmieniać biegi.",
+      commonCauses: [
+        "Uszkodzony czujnik prędkości / ABS",
+        "Uszkodzone okablowanie",
+        "Problem w sieci danych między sterownikami",
+      ],
+      diagnosticsSteps: [
+        "Porównaj prędkość z odczytu z rzeczywistą podczas jazdy.",
+        "Sprawdź czujniki prędkości i ich przewody.",
+      ],
+    ),
+    "P0505": const DtcCode(
+      code: "P0505",
+      title: "Sterowanie biegiem jałowym — usterka (Idle Air Control)",
+      category: "Bieg jałowy",
+      description: "Silnik nie trzyma równych obrotów na jałowym — może gasnąć albo 'pływać' obrotami na postoju.",
+      commonCauses: [
+        "Zabrudzona przepustnica lub kanał obejścia powietrza",
+        "Nieszczelności podciśnienia (fałszywe powietrze)",
+        "Uszkodzony silniczek/krok biegu jałowego (starsze auta)",
+      ],
+      diagnosticsSteps: [
+        "Oczyść przepustnicę i wykonaj adaptację przepustnicy.",
+        "Sprawdź szczelność układu dolotowego.",
+      ],
+    ),
+    "P0521": const DtcCode(
+      code: "P0521",
+      title: "Czujnik ciśnienia oleju — nieprawidłowy odczyt (Oil Pressure Range)",
+      category: "Układ smarowania",
+      description: "Czujnik ciśnienia oleju podaje dziwne wartości. UWAGA: jeśli ciśnienie oleju naprawdę jest za niskie, grozi to zatarciem silnika — traktuj poważnie.",
+      commonCauses: [
+        "Uszkodzony czujnik ciśnienia oleju",
+        "Naprawdę niskie ciśnienie oleju (zużyta pompa, niski poziom, zły olej)",
+        "Uszkodzone okablowanie",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź poziom i stan oleju.",
+        "Zmierz rzeczywiste ciśnienie oleju manometrem, zanim wymienisz czujnik.",
+      ],
+    ),
+    "P0606": const DtcCode(
+      code: "P0606",
+      title: "Usterka wewnętrzna sterownika silnika (ECM/PCM Processor)",
+      category: "Sterownik silnika",
+      description: "Komputer sterujący silnikiem zgłasza swój wewnętrzny błąd. Auto może wpaść w tryb awaryjny lub źle pracować.",
+      commonCauses: [
+        "Uszkodzony sterownik silnika (ECU)",
+        "Problem z zasilaniem/masą sterownika",
+        "Skutek zalania, korozji lub złego rozruchu z pomocą",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź zasilanie i masy sterownika oraz stan złączy.",
+        "Zweryfikuj wersję oprogramowania; w razie potrzeby aktualizacja/naprawa ECU.",
+      ],
+    ),
+    "P0627": const DtcCode(
+      code: "P0627",
+      title: "Sterowanie pompą paliwa — usterka (Fuel Pump Control Circuit)",
+      category: "Zasilanie paliwem",
+      description: "Problem ze sterowaniem pompą paliwa. Auto może gasnąć, nie odpalać albo tracić moc przy przyspieszaniu.",
+      commonCauses: [
+        "Uszkodzona pompa paliwa lub jej moduł sterujący",
+        "Przekaźnik lub bezpiecznik pompy",
+        "Uszkodzone okablowanie",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź zasilanie i sterowanie pompy paliwa.",
+        "Zmierz ciśnienie paliwa.",
+      ],
+    ),
+    "P0700": const DtcCode(
+      code: "P0700",
+      title: "Żądanie kontrolki od sterownika skrzyni (TCM Request MIL)",
+      category: "Skrzynia biegów",
+      description: "To nie jest sama usterka, tylko informacja, że sterownik skrzyni biegów wykrył problem i zapalił kontrolkę. Trzeba odczytać dokładne kody skrzyni.",
+      commonCauses: [
+        "Usterka zapisana w sterowniku skrzyni (osobny kod)",
+        "Problemy z czujnikami lub elektrozaworami skrzyni",
+        "Zły stan/poziom oleju w skrzyni automatycznej",
+      ],
+      diagnosticsSteps: [
+        "Odczytaj kody bezpośrednio ze sterownika skrzyni biegów.",
+        "Sprawdź poziom i stan oleju w skrzyni.",
+      ],
+    ),
+    "P0741": const DtcCode(
+      code: "P0741",
+      title: "Sprzęgło blokady konwertera — poślizg (Torque Converter Clutch)",
+      category: "Skrzynia automatyczna",
+      description: "W skrzyni automatycznej sprzęgło blokujące przemiennik momentu ślizga się. Może być szarpanie przy stałej prędkości i większe spalanie.",
+      commonCauses: [
+        "Zużyty olej lub zapchany filtr skrzyni",
+        "Uszkodzony elektrozawór (solenoid) blokady",
+        "Zużyte sprzęgło blokady / przemiennik momentu",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź stan i poziom oleju w skrzyni; rozważ wymianę oleju i filtra.",
+        "Odczytaj parametry pracy skrzyni w danych bieżących.",
+      ],
+    ),
+    "U0101": const DtcCode(
+      code: "U0101",
+      title: "Brak komunikacji ze sterownikiem skrzyni (Lost Comm. with TCM)",
+      category: "Sieć pokładowa (CAN)",
+      description: "Sterownik silnika stracił kontakt ze sterownikiem skrzyni biegów przez sieć w aucie. Skrzynia może przejść w tryb awaryjny (jeden bieg).",
+      commonCauses: [
+        "Uszkodzone okablowanie / złącza sieci CAN",
+        "Uszkodzony sterownik skrzyni lub jego zasilanie/masa",
+        "Korozja lub zalanie złączy",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź zasilanie i masy sterownika skrzyni.",
+        "Skontroluj przewody magistrali CAN i złącza.",
+      ],
+    ),
+    "U0121": const DtcCode(
+      code: "U0121",
+      title: "Brak komunikacji ze sterownikiem ABS (Lost Comm. with ABS)",
+      category: "Sieć pokładowa (CAN)",
+      description: "Auto straciło łączność ze sterownikiem ABS. Zwykle gasną wtedy lampki ABS/ESP i te systemy nie działają, choć zwykłe hamulce hamują normalnie.",
+      commonCauses: [
+        "Uszkodzone okablowanie / złącza do modułu ABS",
+        "Uszkodzony moduł ABS lub jego zasilanie",
+        "Problem w magistrali CAN",
+      ],
+      diagnosticsSteps: [
+        "Sprawdź zasilanie, masy i złącza modułu ABS.",
+        "Skontroluj przewody magistrali CAN.",
       ],
     ),
   };

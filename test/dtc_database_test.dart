@@ -3,7 +3,11 @@ import 'package:autocheck/models/dtc_code.dart';
 
 void main() {
   test("rozszerzona baza zawiera najczęstsze kody z pełnym opisem PL", () {
-    for (final code in ["P2015", "P244A", "P244B", "P0420", "P0380", "P204F", "P0128", "P0340"]) {
+    for (final code in [
+      "P2015", "P244A", "P244B", "P0420", "P0380", "P204F", "P0128", "P0340",
+      // uniwersalne: benzyna, sieć, skrzynia — nie tylko diesel/VAG
+      "P0100", "P0130", "P0351", "P0500", "P0700", "P0741", "U0101", "P0606",
+    ]) {
       final d = DtcCode.getByCode(code);
       expect(d.code, code);
       expect(d.title.isNotEmpty, isTrue, reason: "$code tytuł");
