@@ -8,6 +8,8 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
 import 'package:provider/provider.dart';
 import '../models/dtc_code.dart';
+import '../services/datalogger_service.dart';
+import '../widgets/vin_dialog.dart';
 import '../services/dtc_user_descriptions.dart';
 import '../services/obd_service.dart';
 import '../theme/app_theme.dart';
@@ -366,8 +368,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
               columnWidths: const {0: IntrinsicColumnWidth(), 1: FlexColumnWidth()},
               children: [
                 if (v != null) ...[
-                  row("Pojazd", "${v.manufacturer} ${v.modelName}${v.year.isNotEmpty ? ' • ${v.year}' : ''}"),
-                  row("VIN", v.vin, mono: true),
+                  row("Pojazd", "${v.manufacturer} ${v.modelName}${v.year.isNotEmpty && v.year != 'Nieokreślony' ? ' • ${v.year}' : ''}"),
+                  if (v.hasVin) row("VIN", v.vin, mono: true),
                   row("Silnik", v.engineDescription),
                   row("Sterownik", "${v.calibrationId}${obd.engineEcuAddress != null ? ' • ${obd.engineEcuAddress}' : ''}"),
                   row("Napięcie", "${v.batteryVoltage.toStringAsFixed(1)} V"),
@@ -381,10 +383,43 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 if (obd.protocolName.isNotEmpty) row("Protokół", obd.protocolName.replaceFirst("AUTO, ", "")),
               ],
             ),
+            if (v != null) ...[
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  if (!v.hasVin) ...[
+                    const Icon(Icons.info_outline, size: 16, color: AppTheme.warn),
+                    const SizedBox(width: 6),
+                    const Expanded(
+                      child: Text("Sterownik nie podał VIN",
+                          style: TextStyle(color: AppTheme.warn, fontSize: 12.5)),
+                    ),
+                  ] else
+                    const Spacer(),
+                  TextButton.icon(
+                    onPressed: () => _enterVin(obd),
+                    icon: Icon(v.hasVin ? Icons.edit_outlined : Icons.qr_code_scanner, size: 18),
+                    label: Text(v.hasVin ? "Zmień VIN" : "Wpisz / zeskanuj VIN"),
+                  ),
+                ],
+              ),
+            ],
           ],
         ],
       ),
     );
+  }
+
+  Future<void> _enterVin(ObdService obd) async {
+    final current = obd.vehicleInfo;
+    final vin = await showVinDialog(context, initial: current?.hasVin == true ? current!.vin : "");
+    if (vin == null || !mounted) return;
+    obd.setManualVin(vin);
+    // Bieżący log bez VIN dostaje go od razu (raport, rozpoznanie silnika)
+    final logger = context.read<DataloggerService>();
+    final s = logger.activeSession;
+    if (s != null && s.vin.isEmpty && !logger.isRecording) await logger.setSessionVin(s, vin);
+    if (mounted) _showSnack("VIN zapisany: $vin", AppTheme.ok);
   }
 
   Widget _sectionHeader(String title, String description) {

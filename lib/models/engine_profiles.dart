@@ -60,6 +60,16 @@ class EngineMatch {
 }
 
 class EngineProfiles {
+  /// Profil silnika po kodzie typu silnika z tabliczki / VIN (np. PSA „RFN”, „9HZ”).
+  static EngineProfile? byEngineTypeCode(String? code) {
+    if (code == null || code.trim().isEmpty) return null;
+    final c = code.trim().toUpperCase();
+    for (final p in all) {
+      if (p.aliases.any((a) => a.toUpperCase() == c)) return p;
+    }
+    return null;
+  }
+
   static EngineProfile? byCode(String code) {
     for (final p in all) {
       if (p.code == code) return p;
@@ -272,7 +282,7 @@ class EngineProfiles {
     ]),
     // ---------------------------------------------------------------- PSA / Ford
     EngineProfile("DV6", "PSA/Ford 1.6 HDi/TDCi (DV6)", [
-      "DV6", "1.6 HDI", "1.6 TDCI", "9HZ", "9HP", "9H0", "T1DA", "T3DA",
+      "DV6", "1.6 HDI", "1.6 TDCI", "9HZ", "9HP", "9H0", "9HX", "9HY", "9HV", "9HW", "9HR", "9HF", "9HD", "T1DA", "T3DA",
     ], [
       EngineFault({FaultArea.turbo, FaultArea.oil}, "Zatarcie turbiny od zatkanego sitka oleju",
           "Klasyk DV6: sitko poboru oleju do turbiny zarasta szlamem — głodzenie i zatarcie turbo. Wymieniać sitko przy turbinie."),
@@ -281,8 +291,50 @@ class EngineProfiles {
       EngineFault({FaultArea.injectors}, "Wtryskiwacze (Siemens/Continental)",
           "Rosnące korekty i przelewy — typowe zużycie wtrysków."),
     ]),
+    EngineProfile("EW10", "PSA 2.0 16V benzyna (EW10)", [
+      "EW10", "EW10J4", "EW10A", "2.0 16V", "RFN", "RFJ", "RFR", "RFK", "RFH", "RFS",
+    ], [
+      EngineFault({FaultArea.mixture, FaultArea.intake}, "Falowanie obrotów na wolnych — zawór EVAP / przepustnica",
+          "Typowe dla EW10: zawieszony zawór odpowietrzania zbiornika (kanister) lub zabrudzona przepustnica elektroniczna — obroty pływają, silnik gaśnie. Czyszczenie przepustnicy + adaptacja, test zaworu EVAP."),
+      EngineFault({FaultArea.ignition, FaultArea.misfire}, "Listwa/cewki zapłonowe",
+          "Częste pęknięcia listwy cewek zapłonowych — szarpanie i wypadanie zapłonu, zwłaszcza na mokro."),
+      EngineFault({FaultArea.timing}, "Wariator faz rozrządu (EW10A)",
+          "Zacinający się wariator lub elektrozawór faz — błąd P0011/P0012, falowanie na zimno. Ważny czysty olej."),
+      EngineFault({FaultArea.oil}, "Wycieki i ubytki oleju",
+          "Uszczelka pokrywy zaworów i uszczelniacze — wycieki; przy dużym przebiegu zwiększone zużycie oleju."),
+      EngineFault({FaultArea.cooling}, "Obudowa termostatu i czujnik temperatury",
+          "Pękające plastikowe obudowy termostatu i wycieki płynu; zawodne czujniki temperatury."),
+    ]),
+    EngineProfile("EW7", "PSA 1.8 16V benzyna (EW7)", ["EW7", "EW7J4", "1.8 16V", "6FZ", "6FY"], [
+      EngineFault({FaultArea.ignition, FaultArea.misfire}, "Listwa/cewki zapłonowe",
+          "Jak w EW10 — pęknięta listwa cewek daje wypadanie zapłonu."),
+      EngineFault({FaultArea.mixture, FaultArea.intake}, "Falowanie obrotów (EVAP / przepustnica)",
+          "Zabrudzona przepustnica lub zawór EVAP — niestabilne wolne obroty."),
+    ]),
+    EngineProfile("TU5", "PSA 1.6 16V benzyna (TU5)", [
+      "TU5", "TU5JP4", "1.6 16V", "NFU", "NFR", "NFS", "NFT", "NFX", "NFZ",
+    ], [
+      EngineFault({FaultArea.ignition, FaultArea.misfire}, "Listwa cewek zapłonowych",
+          "Klasyk TU5: pęknięta listwa cewek — szarpanie, wypadanie zapłonu, kontrolka silnika."),
+      EngineFault({FaultArea.cooling}, "Obudowa termostatu / czujnik temperatury",
+          "Wycieki z obudowy termostatu i błędne wskazania czujnika temperatury (trudny rozruch, wysoka spalanie)."),
+      EngineFault({FaultArea.mixture}, "Sonda lambda i przepustnica",
+          "Zużyta sonda lambda i zabrudzona przepustnica — nierówne wolne obroty, wysokie spalanie."),
+    ]),
+    EngineProfile("TU3", "PSA 1.4 8V benzyna (TU3)", ["TU3", "TU3JP", "1.4 8V", "KFV", "KFW", "KFU", "KFT", "KFX"], [
+      EngineFault({FaultArea.ignition, FaultArea.misfire}, "Cewka zapłonowa / przewody WN",
+          "Uszkodzona cewka zapłonowa (moduł) lub przewody — wypadanie zapłonu."),
+      EngineFault({FaultArea.cooling}, "Czujnik temperatury i termostat",
+          "Zawodne czujniki temperatury — trudny rozruch na zimno, wentylator bez potrzeby."),
+    ]),
+    EngineProfile("DW8", "PSA 1.9 D wolnossący (DW8)", ["DW8", "1.9 D", "WJY", "WJZ", "WJX"], [
+      EngineFault({FaultArea.injectors}, "Pompa wtryskowa i wtryskiwacze",
+          "Zużyta pompa wtryskowa (Lucas/Bosch) i wtryskiwacze — trudny rozruch, dymienie, spadek mocy."),
+      EngineFault({FaultArea.misfire}, "Świece żarowe",
+          "Przepalone świece żarowe — trudny rozruch na zimno i nierówna praca po odpaleniu."),
+    ]),
     EngineProfile("DW10", "PSA/Ford 2.0 HDi/TDCi (DW10)", [
-      "DW10", "2.0 HDI", "2.0 TDCI", "RHR", "RHF", "RHH", "AHX",
+      "DW10", "2.0 HDI", "2.0 TDCI", "RHR", "RHF", "RHH", "AHX", "RHY", "RHS", "RHZ", "RHK", "RHM", "RHE",
     ], [
       EngineFault({FaultArea.turbo}, "Geometria turbiny i sterowanie",
           "Zapiekanie geometrii, sterowanie podciśnieniem — spadek doładowania."),
@@ -449,7 +501,7 @@ class EngineProfiles {
       EngineFault({FaultArea.cooling}, "Pompa wody / termostat",
           "Elektryczna pompa wody i termostat do kontroli przy wahaniach temperatury."),
     ]),
-    EngineProfile("BMW_N13_PRINCE", "BMW/Mini/PSA 1.4/1.6 THP (Prince/EP6)", ["N13", "N18", "EP6", "PRINCE", "THP", "5FV", "5G0"], [
+    EngineProfile("BMW_N13_PRINCE", "BMW/Mini/PSA 1.4/1.6 THP (Prince/EP6)", ["N13", "N18", "EP6", "PRINCE", "THP", "5FV", "5G0", "5FW", "5FS", "5FT", "5FX", "5FU", "5FN", "5FM"], [
       EngineFault({FaultArea.timing}, "Rozciągnięty łańcuch rozrządu",
           "Prince/EP6: łańcuch i prowadnice — grzechot na zimno, ryzyko przeskoku."),
       EngineFault({FaultArea.intake, FaultArea.mixture}, "Nagar na zaworach ssących (DI)",

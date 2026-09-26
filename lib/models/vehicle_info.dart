@@ -1,3 +1,5 @@
+import 'engine_profiles.dart';
+import 'vin_decoder.dart';
 import 'extended_pid.dart';
 
 enum FuelType { unknown, petrol, diesel, hybrid, electric, other }
@@ -69,6 +71,32 @@ class VehicleInfo {
 
   bool get isDiesel => fuelType == FuelType.diesel;
 
+  /// Czy VIN został odczytany (lub wpisany) i jest poprawny.
+  bool get hasVin => vin.length == 17;
+
+  /// Etykieta pojazdu do logów i raportu (bez VIN, gdy go brak).
+  String get label {
+    final known = manufacturer != "Nieznany producent";
+    final name = known ? "$manufacturer $modelName" : "Pojazd";
+    return hasVin ? "$name • $vin" : name;
+  }
+
+  /// Te same dane pojazdu z ręcznie wpisanym / zeskanowanym numerem VIN
+  /// (np. gdy sterownik nie podaje VIN — starsze auta PSA, Renault, Fiat).
+  VehicleInfo applyVin(String newVin) {
+    final v = decodeFromRawData(
+      rawVin: newVin,
+      rawCalId: calibrationId == "Brak danych kalibracji" ? null : calibrationId,
+      rawEcuName: ecuName,
+      protocol: obdProtocol,
+      voltage: batteryVoltage,
+      distSinceDtc: distanceSinceDtcClearedKm,
+      distMil: distanceWithMilOnKm,
+      fuelType: fuelType,
+    );
+    return v;
+  }
+
   const VehicleInfo({
     required this.vin,
     required this.manufacturer,
@@ -98,7 +126,12 @@ class VehicleInfo {
     int? distMil,
     FuelType fuelType = FuelType.unknown,
   }) {
-    final cleanVin = rawVin.replaceAll(RegExp(r'[^A-HJ-NPR-Z0-9]'), '').toUpperCase();
+    // Tylko poprawny, 17-znakowy VIN — napisy zastępcze / śmieci z odpowiedzi to „brak VIN”
+    final compact = rawVin.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+    final tail = compact.length >= 17 ? compact.substring(compact.length - 17) : compact;
+    final validVin = VinDecoder.isValid(tail) ? tail : "";
+    // Do rozpoznania marki wystarczy początek numeru (WMI) — nawet z niepełnego odczytu
+    final cleanVin = validVin.isNotEmpty ? validVin : compact.replaceAll(RegExp(r'[IOQ]'), '');
 
     String mfg = "Nieznany producent";
     String country = "Nieznany";
@@ -228,6 +261,23 @@ class VehicleInfo {
       engine = ecuEngine.$1;
       if (fuelType == FuelType.unknown) fuelType = ecuEngine.$2;
     }
+    // PSA: 4. znak VIN = model (Peugeot), znaki 6–8 = typ silnika z tabliczki (np. RFN)
+    if (prof == VehicleProfile.psa && cleanVin.length == 17) {
+      if (cleanVin.startsWith("VF3") || cleanVin.startsWith("VR3")) {
+        final m = peugeotModelCodes[cleanVin[3]];
+        if (m != null) model = m;
+      }
+      final code = VinDecoder.psaEngineType(cleanVin);
+      final ep = EngineProfiles.byEngineTypeCode(code);
+      if (code != null && engine == "Dane silnika z ECU") {
+        engine = ep != null ? "${ep.name}, typ $code" : "Typ silnika $code";
+      }
+      if (ep != null && fuelType == FuelType.unknown) {
+        final n = ep.name.toUpperCase();
+        if (n.contains("BENZYNA")) fuelType = FuelType.petrol;
+        if (n.contains("HDI") || n.contains(" D ")) fuelType = FuelType.diesel;
+      }
+    }
     if (fuelType != FuelType.unknown) {
       engine = engine == "Dane silnika z ECU" ? fuelType.label : "$engine • ${fuelType.label}";
     }
@@ -248,7 +298,7 @@ class VehicleInfo {
     }
 
     return VehicleInfo(
-      vin: cleanVin.isNotEmpty ? cleanVin : "BRAK ODCZYTU VIN",
+      vin: validVin,
       manufacturer: mfg,
       modelName: model,
       year: year,
@@ -265,6 +315,11 @@ class VehicleInfo {
       fuelType: fuelType,
     );
   }
+
+  /// Peugeot: 4. znak VIN → model.
+  static const Map<String, String> peugeotModelCodes = {
+    "2": "206", "3": "307", "W": "207", "4": "308", "6": "407", "C": "208 / 2008",
+  };
 
   /// Kody modeli VAG z pozycji 7-8 numeru VIN.
   static const Map<String, String> vagModelCodes = {

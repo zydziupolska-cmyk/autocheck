@@ -4,6 +4,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import '../models/vehicle_info.dart';
+import '../models/engine_profiles.dart';
+import '../models/vin_decoder.dart';
 import '../models/anomaly.dart';
 import '../models/log_point.dart';
 import 'engine_memory.dart';
@@ -131,7 +134,8 @@ class DataloggerService extends ChangeNotifier {
   }
 
   /// Potwierdzony kod silnika dla bieżącego auta (z pamięci po VIN) albo "".
-  String get _engineCode => engineMemory?.codeForVin(obdService.vehicleInfo?.vin) ?? "";
+  String get _engineCode =>
+      engineMemory?.codeForVin(obdService.vehicleInfo?.vin) ?? _codeFromVin(obdService.vehicleInfo?.vin ?? "");
 
   void setMode(LogMode mode) {
     if (_isRecording) return;
@@ -377,7 +381,7 @@ class DataloggerService extends ChangeNotifier {
       activePidKeys: usedKeys.toList(),
       points: List.from(_currentPoints),
       isDiesel: _isDiesel,
-      vehicleLabel: info != null ? "${info.manufacturer} ${info.modelName} • ${info.vin}" : null,
+      vehicleLabel: info?.label,
       engineInfo: _engineInfo,
       vin: info?.vin ?? "",
       engineCode: _engineCode,
@@ -388,7 +392,27 @@ class DataloggerService extends ChangeNotifier {
   /// Kod silnika dla zapisanej sesji: potwierdzony w sesji albo z pamięci po VIN.
   String _codeForSession(LogSession s) {
     if (s.engineCode.isNotEmpty) return s.engineCode;
-    return engineMemory?.codeForVin(s.vin) ?? "";
+    return engineMemory?.codeForVin(s.vin) ?? _codeFromVin(s.vin);
+  }
+
+  /// Silnik z kodu typu zapisanego w VIN (PSA), gdy brak zapamiętanego wyboru.
+  static String _codeFromVin(String vin) =>
+      EngineProfiles.byEngineTypeCode(VinDecoder.psaEngineType(vin))?.code ?? "";
+
+  /// Uzupełnia VIN zapisanego logu (wpisany ręcznie lub zeskanowany) i ponawia analizę,
+  /// żeby raport i rozpoznanie silnika miały właściwe dane.
+  Future<void> setSessionVin(LogSession session, String vin) async {
+    final info = VehicleInfo.decodeFromRawData(rawVin: vin);
+    if (!info.hasVin) return;
+    final updated = session.withVehicle(vin: info.vin, vehicleLabel: info.label);
+    final idx = _sessionsHistory.indexWhere((s) => s.id == session.id);
+    if (idx >= 0) _sessionsHistory[idx] = updated;
+    if (_activeSession?.id == session.id) {
+      _activeSession = updated;
+      _reanalyzeActive();
+    }
+    notifyListeners();
+    if (persistHistory) await _saveSession(updated);
   }
 
   static String _two(int v) => v.toString().padLeft(2, '0');

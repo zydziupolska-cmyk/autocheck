@@ -66,5 +66,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Aparat służy do zeskanowania numeru VIN z tabliczki lub dowodu rejestracyjnego.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Dostęp do zdjęć pozwala odczytać numer VIN z wcześniej zrobionego zdjęcia.</string>
 </dict>
 </plist>

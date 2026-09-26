@@ -72,7 +72,7 @@ class DiagnosisReport {
     b.writeln("  Tryb: ${session.mode == LogMode.pull ? 'Przyspieszenie' : 'Jazda diagnostyczna'}");
     b.writeln("  Czas: ${session.durationSec.toStringAsFixed(1)} s");
     b.writeln("  Maks. obroty: ${session.peakRpm.toInt()} obr/min");
-    b.writeln("  Maks. doładowanie: ${session.peakBoost.toStringAsFixed(2)} bar");
+    if (session.hasBoostData) b.writeln("  Maks. doładowanie: ${session.peakBoost.toStringAsFixed(2)} bar");
     b.writeln();
     b.writeln("WYNIK: $_verdict");
     b.writeln();
@@ -176,7 +176,7 @@ class DiagnosisReport {
         '<div><b>Tryb:</b> ${session.mode == LogMode.pull ? 'Przyspieszenie' : 'Jazda diagnostyczna'}</div>'
         '<div><b>Czas:</b> ${session.durationSec.toStringAsFixed(1)} s</div>'
         '<div><b>Maks. obroty:</b> ${session.peakRpm.toInt()} obr/min</div>'
-        '<div><b>Maks. doładowanie:</b> ${session.peakBoost.toStringAsFixed(2)} bar</div>'
+        '${session.hasBoostData ? '<div><b>Maks. doładowanie:</b> ${session.peakBoost.toStringAsFixed(2)} bar</div>' : ''}'
         '</div>');
 
     final vColor = hasCritical ? "#FDECEC;color:#B4232700" : hasIssues ? "#FBF3DF" : "#E7F3EA";

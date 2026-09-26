@@ -27,11 +27,12 @@ class AnomalyEngine {
         ? wotWindows
         : [points];
 
+    final knockEvents = <_KnockEvent>[];
     for (final window in windowsToAnalyze) {
       if (window.length < 5) continue;
 
-      // 1. Analiza cofania zapłonu (Knock / Timing Retard)
-      if (!isDiesel) _checkTimingRetard(window, anomalies);
+      // 1. Analiza cofania zapłonu (Knock / Timing Retard) — zdarzenia scalane niżej w jeden wynik
+      if (!isDiesel) _collectKnockEvents(window, knockEvents);
 
       // 2. Analiza spadków ciśnienia doładowania (Boost Leaks)
       _checkBoostLeaks(window, anomalies, isDiesel: isDiesel);
@@ -45,10 +46,13 @@ class AnomalyEngine {
       // 6. Analiza przegrzewania dolotu (IAT Heat Soak)
       _checkIatHeatSoak(window, anomalies);
 
-      // 7. Analiza korekt paliwowych (STFT / LTFT)
-      _checkFuelTrims(window, anomalies);
 
     }
+
+    if (knockEvents.isNotEmpty) anomalies.add(_knockAnomaly(knockEvents));
+
+    // 7. Korekty paliwa — na całej sesji (w oknach pełnego gazu sterownik jest w pętli otwartej)
+    _checkFuelTrims(points, anomalies);
 
     // 10. Badanie Leniwej Sondy Lambda (Wąskopasmowa) - na pełnej sesji
     if (!isDiesel) _checkNarrowbandO2Health(points, anomalies);
@@ -168,83 +172,148 @@ class AnomalyEngine {
     return windows;
   }
 
-  /// Sprawdza nagłe cofnięcia kąta wyprzedzenia zapłonu (Knock retard)
-  static void _checkTimingRetard(List<LogPoint> points, List<Anomaly> anomalies) {
-    if (!points.any((p) => p.values.containsKey("IGN"))) return;
+  /// Czy próbka jest pod wyraźnym obciążeniem (tylko wtedy cofnięcie zapłonu może oznaczać stuk).
+  static bool _underLoad(LogPoint p) {
+    if (p.has("PEDAL") || p.has("TPS")) return p.tps >= 55;
+    if (p.has("LOAD")) return p.load >= 70;
+    return false;
+  }
 
-    double maxTimingSeen = -999;
-    LogPoint? dipStart;
-    double minDipVal = 999;
+  /// Zbiera zdarzenia cofnięcia zapłonu pod obciążeniem (spalanie stukowe).
+  ///
+  /// Kąt zapłonu w normalnej jeździe skacze o dziesiątki stopni (lekkie obciążenie → duże
+  /// wyprzedzenie, odpuszczenie gazu, zmiana biegu, redukcja momentu, bieg jałowy). Dlatego
+  /// spadek liczymy wyłącznie w ciągłym odcinku pod obciążeniem, względem kąta z ostatnich
+  /// ~1,5 s tego samego odcinka — nie względem maksimum z całej jazdy. Pomijamy początek
+  /// wciśnięcia gazu (sterownik łagodzi szarpnięcie), spadek obrotów (zmiana biegu) i
+  /// naturalne zmniejszanie kąta przy rosnącym doładowaniu/obciążeniu.
+  static void _collectKnockEvents(List<LogPoint> pts, List<_KnockEvent> out) {
+    if (!pts.any((p) => p.has("IGN"))) return;
+    // Bez informacji o obciążeniu nie da się odróżnić stuku od sterowania momentem
+    if (!pts.any((p) => p.has("PEDAL") || p.has("TPS") || p.has("LOAD"))) return;
 
-    for (int i = 1; i < points.length; i++) {
-      final p = points[i];
-      final prev = points[i - 1];
-      final ign = p.ign;
+    double? loadedSince;
+    int? dipStart;
+    LogPoint? dipBase;
+    double dipBaseline = 0;
+    LogPoint? dipMin;
+    int dipSamples = 0;
 
-      if (ign > maxTimingSeen) {
-        maxTimingSeen = ign;
+    void closeDip() {
+      if (dipStart != null && dipMin != null && dipBase != null && dipSamples >= 2) {
+        out.add(_KnockEvent(pts[dipStart!], dipMin!, dipBaseline, dipMin!.ign));
       }
+      dipStart = null;
+      dipBase = null;
+      dipMin = null;
+      dipSamples = 0;
+    }
 
-      // Nagły spadek kąta wyprzedzenia zapłonu przy rosnących obrotach (> 3.0° drop)
-      final dropFromPeak = maxTimingSeen - ign;
-      final stepDrop = prev.ign - ign;
+    for (int i = 1; i < pts.length; i++) {
+      final p = pts[i];
+      final prev = pts[i - 1];
+      final loaded = p.has("IGN") && _underLoad(p) && p.rpm >= 1800;
+      if (!loaded) {
+        loadedSince = null;
+        closeDip();
+        continue;
+      }
+      loadedSince ??= p.timeMs;
+      // Zmiana biegu / spadek obrotów — sterownik celowo cofa zapłon
+      if (p.rpm < prev.rpm - 250) {
+        closeDip();
+        continue;
+      }
+      // Pierwsze ~0,8 s po wciśnięciu gazu to łagodzenie szarpnięcia, nie stuk
+      if (p.timeMs - loadedSince < 800) continue;
 
-      if ((dropFromPeak >= 3.5 || stepDrop >= 2.5) && p.rpm >= 2500) {
-        dipStart ??= prev;
-        if (ign < minDipVal) minDipVal = ign;
-      } else if (dipStart != null) {
-        // Koniec spadku
-        final durationMs = p.timeMs - dipStart.timeMs;
-        if (durationMs >= 200) {
-          final isCritical = (maxTimingSeen - minDipVal) >= 5.5 || minDipVal < 2.0;
-          anomalies.add(Anomaly(
-            id: "ign_${dipStart.timeMs.toInt()}",
-            title: "Cofanie zapłonu (Spalanie stukowe / Knock)",
-            severity: isCritical ? AnomalySeverity.critical : AnomalySeverity.warning,
-            paramKey: "IGN",
-            startMs: dipStart.timeMs,
-            endMs: p.timeMs,
-            startRpm: dipStart.rpm,
-            endRpm: p.rpm,
-            observedValueText: "Spadek z ${maxTimingSeen.toStringAsFixed(1)}° do ${minDipVal.toStringAsFixed(1)}° (Cofnięcie o -${(maxTimingSeen - minDipVal).toStringAsFixed(1)}°)",
-            primarySymptom: "ECU gwałtownie cofa kąt wyprzedzenia zapłonu pod pełnym obciążeniem (${dipStart.rpm.toInt()} - ${p.rpm.toInt()} RPM)",
-            correlatedSignals: {
-              "IGN": "Cofnięcie o -${(maxTimingSeen - minDipVal).toStringAsFixed(1)}°",
-              "IAT": "${p.iat.toStringAsFixed(0)} °C ${p.iat > 52 ? '(PRZEGRZANY DOLOT - ryzyko samozapłonu!)' : '(temperatura w normie)'}",
-              "AFR": "${p.afr.toStringAsFixed(1)}:1 ${p.afr > 12.8 ? '(za ubogo pod doładowaniem)' : '(mieszanka prawidłowa)'}",
-              "BOOST": "${p.boost.toStringAsFixed(2)} bar",
-              "TPS": "${p.tps.toInt()}%",
-            },
-            falseLeadWarning: "UWAGA NA FAŁSZYWY TROP: Kod błędu czujnika spalania stukowego (Knock Sensor) NIE oznacza, że czujnik jest uszkodzony! Czujnik stuku działa prawidłowo i ratuje tłoki przed stopieniem. Wymiana czujnika stuku nie usunie przyczyny stukania!",
-            ruledOutCauses: [
-              "Wykluczono awarię czujnika stuku – czujnik dynamicznie reaguje na przeciążenie silnika",
-              if (p.iat < 45) "Wykluczono przegrzanie dolotu (IAT = ${p.iat.toStringAsFixed(0)}°C w normie)",
-              if (p.afr < 12.2) "Wykluczono zubożenie mieszanki (AFR = ${p.afr.toStringAsFixed(1)}:1 w bezpiecznym zakresie)",
-            ],
-            rootCauseConclusion: p.iat > 52
-                ? "Główną przyczyną cofania zapłonu jest zbyt wysoka temperatura w dolocie (IAT = ${p.iat.toStringAsFixed(0)}°C). Gorące powietrze sprzyja samozapłonom stukowym."
-                : "Spalanie stukowe wynika najprawdopodobniej ze zbyt niskiej liczby oktanowej paliwa, przegrzania komory spalania przez nagar lub zużycia świec zapłonowych.",
-            description: "Sterownik silnika gwałtownie cofnął kąt wyprzedzenia zapłonu w zakresie ${dipStart.rpm.toInt()} - ${p.rpm.toInt()} RPM. Oznacza to, że czujnik spalania stukowego zarejestrował stukanie w cylindrach.",
-            hypotheses: [
-              "Zbyt niska liczba oktanowa paliwa (np. wlane PB95 zamiast wymaganej PB98/100)",
-              "Zużyte świece zapłonowe (wypalone elektrody, niewłaściwa przerwa)",
-              "Niesprawna cewka zapłonowa lub kable wysokiego napięcia",
-              "Za wysoka temperatura powietrza w dolocie (niewydajny intercooler)",
-              "Nagromadzony nagar w komorach spalania powodujący samozapłon",
-            ],
-            recommendations: [
-              "Zatankuj świeże paliwo 98 lub 100 oktanów na sprawdzonej stacji i powtórz log.",
-              "Wykręć świece i skontroluj ich stan oraz przerwę na elektrodach.",
-              "Sprawdź temperaturę w dolocie (IAT) oraz układ chłodzenia.",
-              "Jeśli auto jest po chiptuningu, poinformuj tunera o cofaniu zapłonu.",
-            ],
-          ));
+      // Kąt bazowy: maksimum z ostatnich 1,5 s ciągłego obciążenia (sprzed spadku)
+      LogPoint? base;
+      for (int j = i - 1; j >= 0 && p.timeMs - pts[j].timeMs <= 1500; j--) {
+        final q = pts[j];
+        if (!q.has("IGN") || !_underLoad(q)) break;
+        if (dipStart != null && j >= dipStart!) continue;
+        if (base == null || q.ign > base.ign) base = q;
+      }
+      if (base == null) continue;
+
+      // Rosnące doładowanie / obciążenie naturalnie zmniejsza kąt — to nie stuk
+      final boostRise = (p.has("BOOST") && base.has("BOOST")) ? p.boost - base.boost : 0.0;
+      final loadRise = (p.has("LOAD") && base.has("LOAD")) ? p.load - base.load : 0.0;
+      final retard = base.ign - p.ign;
+      final inDip = retard >= 4.0 && boostRise <= 0.2 && loadRise <= 15;
+
+      if (inDip) {
+        if (dipStart == null) {
+          dipStart = i;
+          dipBase = base;
+          dipBaseline = base.ign;
         }
-        dipStart = null;
-        maxTimingSeen = ign;
-        minDipVal = 999;
+        dipSamples++;
+        if (dipMin == null || p.ign < dipMin!.ign) dipMin = p;
+      } else {
+        closeDip();
       }
     }
+    closeDip();
+  }
+
+  /// Jeden wynik dla wszystkich zdarzeń cofnięcia zapłonu (zamiast listy powtórzeń).
+  static Anomaly _knockAnomaly(List<_KnockEvent> events) {
+    final worst = events.reduce((a, b) => a.retard >= b.retard ? a : b);
+    final p = worst.minPoint;
+    final n = events.length;
+    final isCritical = worst.retard >= 8.0 || (n >= 3 && worst.retard >= 6.0);
+    final rpmFrom = events.map((e) => e.start.rpm).reduce(min).toInt();
+    final rpmTo = events.map((e) => e.minPoint.rpm).reduce(max).toInt();
+    final count = n == 1 ? "1 zdarzenie" : (n < 5 ? "$n zdarzenia" : "$n zdarzeń");
+    return Anomaly(
+      id: "ign_${worst.start.timeMs.toInt()}",
+      title: "Cofanie zapłonu pod obciążeniem (spalanie stukowe)",
+      severity: isCritical ? AnomalySeverity.critical : AnomalySeverity.warning,
+      paramKey: "IGN",
+      startMs: worst.start.timeMs,
+      endMs: p.timeMs,
+      startRpm: worst.start.rpm,
+      endRpm: p.rpm,
+      observedValueText: "$count; największe cofnięcie o ${worst.retard.toStringAsFixed(1)}° "
+          "(z ${worst.baseline.toStringAsFixed(1)}° do ${worst.minIgn.toStringAsFixed(1)}°) przy ${p.rpm.toInt()} obr/min",
+      primarySymptom: "Pod mocnym gazem sterownik cofa kąt wyprzedzenia zapłonu ($rpmFrom–$rpmTo obr/min)",
+      plainSummary: "Przy mocnym przyspieszaniu sterownik ${n == 1 ? 'raz' : '$n razy'} wyraźnie cofnął zapłon — tak reaguje na "
+          "stukanie w cylindrach. Najczęstsze przyczyny to słabe paliwo, zużyte świece albo nagar. "
+          "Zatankuj dobre paliwo i powtórz pomiar; jeśli się powtarza — sprawdź świece i zapłon.",
+      correlatedSignals: {
+        "IGN": "cofnięcie o ${worst.retard.toStringAsFixed(1)}° (z ${worst.baseline.toStringAsFixed(1)}°)",
+        if (p.has("IAT")) "IAT": "${p.iat.toStringAsFixed(0)} °C ${p.iat > 52 ? '(przegrzany dolot)' : '(w normie)'}",
+        if (p.has("AFR")) "AFR": "${p.afr.toStringAsFixed(1)}:1",
+        if (p.has("BOOST")) "BOOST": "${p.boost.toStringAsFixed(2)} bar",
+        "Gaz": "${p.tps.toInt()}%",
+      },
+      falseLeadWarning: "Kod czujnika spalania stukowego nie oznacza, że czujnik jest uszkodzony — on właśnie wykrywa stuk. "
+          "Wymiana czujnika nie usunie przyczyny.",
+      ruledOutCauses: [
+        "Pominięto spadki kąta przy odpuszczaniu gazu, zmianie biegu i na wolnych obrotach (to normalne sterowanie, nie stuk)",
+        if (p.has("IAT") && p.iat < 45) "Wykluczono przegrzanie dolotu (IAT = ${p.iat.toStringAsFixed(0)}°C)",
+      ],
+      rootCauseConclusion: p.has("IAT") && p.iat > 52
+          ? "Najbardziej prawdopodobna przyczyna: za wysoka temperatura powietrza w dolocie (IAT = ${p.iat.toStringAsFixed(0)}°C) sprzyja samozapłonom."
+          : "Najbardziej prawdopodobna przyczyna: zbyt niska liczba oktanowa paliwa, nagar w komorach spalania lub zużyte świece zapłonowe.",
+      description: "Sterownik silnika cofał kąt wyprzedzenia zapłonu w trakcie jazdy pod obciążeniem. "
+          "Tak zachowuje się, gdy czujnik stukowy wykrywa niekontrolowane spalanie w cylindrach.",
+      hypotheses: const [
+        "Zbyt niska liczba oktanowa paliwa lub paliwo słabej jakości",
+        "Zużyte świece zapłonowe (wypalone elektrody, zła przerwa, zły typ)",
+        "Niesprawna cewka zapłonowa",
+        "Nagar w komorach spalania (samozapłony)",
+        "Za wysoka temperatura powietrza w dolocie lub silnika",
+      ],
+      recommendations: const [
+        "Zatankuj świeże paliwo 98 lub 100 oktanów na sprawdzonej stacji i powtórz log.",
+        "Wykręć świece i skontroluj ich stan oraz przerwę na elektrodach.",
+        "Sprawdź temperaturę w dolocie (IAT) oraz układ chłodzenia.",
+        "Jeśli auto jest po chiptuningu, poinformuj tunera o cofaniu zapłonu.",
+      ],
+    );
   }
 
   /// Sprawdza nieszczelności doładowania (nagły spadek ciśnienia)
@@ -419,58 +488,94 @@ class AnomalyEngine {
     }
   }
 
-  /// Sprawdza czy sonda wąskopasmowa nie jest "leniwa" na podstawie liczby skoków napięcia (Cross-Counts)
+  /// Sprawdza, czy sonda wąskopasmowa nie jest „leniwa”.
+  ///
+  /// Liczymy tylko ciągłe odcinki ustalonej, rozgrzanej jazdy (realny czas, a nie odstęp
+  /// między pierwszą i ostatnią próbką całego logu). Zdrowa sonda przełącza się ~1–3 razy
+  /// na sekundę, więc liczenie przełączeń ma sens tylko przy gęstym odpytywaniu. Przy rzadszym
+  /// oceniamy zakres napięć: zdrowa sonda w pętli zamkniętej schodzi poniżej ~0,25 V
+  /// i wchodzi powyżej ~0,65 V.
   static void _checkNarrowbandO2Health(List<LogPoint> points, List<Anomaly> anomalies) {
     if (!points.any((p) => p.values.containsKey("O2_V"))) return;
 
-    // Badamy tylko przy stałym, lekkim obciążeniu (TPS między 5 a 25), RPM > 1500
-    final steadyPoints = points.where((p) => 
-      p.values.containsKey("O2_V") &&
-      p.values.containsKey("TPS") &&
-      p.values["TPS"]! > 5 && p.values["TPS"]! < 25 &&
-      p.rpm > 1500 && p.rpm < 3000
-    ).toList();
+    bool steady(LogPoint p) {
+      if (!p.has("O2_V")) return false;
+      if (p.has("ECT") && p.ect < 70) return false;
+      final hasThrottle = p.has("PEDAL") || p.has("TPS");
+      if (hasThrottle && (p.tps <= 5 || p.tps >= 40)) return false;
+      if (p.rpm < 1300 || p.rpm > 3200) return false;
+      // korekty-wartowniki = pętla otwarta
+      if (p.has("STFT") && _validTrim(p, "STFT") == null) return false;
+      return true;
+    }
 
-    if (steadyPoints.length < 50) return; // Za mało danych ze stałej jazdy
-
-    int crossCounts = 0;
-    bool? wasRich;
-
-    for (final p in steadyPoints) {
-      final v = p.values["O2_V"]!;
-      final isRich = v > 0.45;
-
-      if (wasRich != null && wasRich != isRich) {
-        crossCounts++;
+    double steadySec = 0;
+    int crossings = 0;
+    final volts = <double>[];
+    final dts = <double>[];
+    LogPoint? first;
+    LogPoint? lastP;
+    LogPoint? prev;
+    for (final p in points) {
+      if (!steady(p)) {
+        prev = null;
+        continue;
       }
-      wasRich = isRich;
+      first ??= p;
+      lastP = p;
+      final v = p.values["O2_V"]!;
+      volts.add(v);
+      if (prev != null) {
+        final dt = (p.timeMs - prev.timeMs) / 1000.0;
+        if (dt > 0 && dt < 1.5) {
+          steadySec += dt;
+          dts.add(dt);
+          final a = prev.values["O2_V"]! > 0.45;
+          final b = v > 0.45;
+          if (a != b) crossings++;
+        }
+      }
+      prev = p;
     }
+    if (first == null || lastP == null || steadySec < 20 || volts.length < 40) return;
 
-    final durationSec = (steadyPoints.last.timeMs - steadyPoints.first.timeMs) / 1000.0;
-    final crossRate = crossCounts / durationSec;
+    final medDt = _median(dts);
+    final sorted = [...volts]..sort();
+    final p10 = sorted[(sorted.length * 0.1).floor()];
+    final p90 = sorted[(sorted.length * 0.9).floor().clamp(0, sorted.length - 1)];
 
-    // Zdrowa sonda powinna przecinać 0.45V co najmniej 1 raz na sekundę podczas stałej jazdy
-    if (durationSec > 5.0 && crossRate < 0.5) {
-      anomalies.add(Anomaly(
-        id: "lazy_o2_${steadyPoints.first.timeMs.toInt()}",
-        title: "Leniwa Sonda Lambda (O2)",
-        severity: AnomalySeverity.warning,
-        paramKey: "O2_V",
-        startMs: steadyPoints.first.timeMs,
-        endMs: steadyPoints.last.timeMs,
-        startRpm: steadyPoints.first.rpm,
-        endRpm: steadyPoints.last.rpm,
-        observedValueText: "Zaledwie $crossCounts skoków w ciągu ${durationSec.toStringAsFixed(1)}s (Oczekiwano > ${(durationSec * 1.0).toInt()})",
-        description: "Sonda tlenu (wąskopasmowa) oscyluje zbyt wolno. Zamiast płynnie i szybko przeskakiwać między mieszanką bogatą a ubogą, napięcie zawiesza się. Może to prowadzić do zwiększonego spalania i złych korekt paliwowych.",
-        hypotheses: [
-          "Sonda uległa naturalnemu zużyciu (starzenie chemiczne).",
-          "Zabrudzenie sondy nagarem / sadzą lub olejem.",
-        ],
-        recommendations: [
-          "Zalecana wymiana przedniej sondy lambda przed podjęciem naprawy katalizatora.",
-        ],
-      ));
-    }
+    final fastSampling = medDt <= 0.25; // co najmniej ~4 próbki/s
+    final crossRate = crossings / steadySec;
+    final slow = fastSampling && crossRate < 0.3;
+    final compressed = p90 - p10 < 0.35 && (p10 > 0.3 || p90 < 0.6);
+    if (!slow && !compressed) return;
+
+    anomalies.add(Anomaly(
+      id: "lazy_o2_${first.timeMs.toInt()}",
+      title: "Leniwa sonda lambda (O2)",
+      severity: AnomalySeverity.warning,
+      paramKey: "O2_V",
+      startMs: first.timeMs,
+      endMs: lastP.timeMs,
+      startRpm: first.rpm,
+      endRpm: lastP.rpm,
+      observedValueText: slow
+          ? "$crossings przełączeń w ${steadySec.toStringAsFixed(0)} s ustalonej jazdy (zdrowa: ok. 1/s)"
+          : "Napięcie sondy tylko ${p10.toStringAsFixed(2)}–${p90.toStringAsFixed(2)} V (zdrowa: ok. 0,1–0,8 V)",
+      plainSummary: "Sonda lambda przed katalizatorem reaguje za wolno albo za słabo. Sterownik gorzej dobiera mieszankę, "
+          "co podnosi spalanie i może zapalać kontrolkę. Zwykle pomaga wymiana sondy.",
+      description: "W ustalonej jeździe na rozgrzanym silniku sonda wąskopasmowa nie przełącza się sprawnie między "
+          "mieszanką bogatą i ubogą.",
+      hypotheses: const [
+        "Naturalne zużycie sondy (starzenie)",
+        "Zanieczyszczenie sondy (olej, płyn chłodniczy, dodatki do paliwa)",
+        "Nieszczelność wydechu przed sondą",
+      ],
+      recommendations: const [
+        "Sprawdź szczelność wydechu przed sondą.",
+        "Wymień przednią sondę lambda przed ewentualną naprawą katalizatora.",
+      ],
+    ));
   }
 
   /// Sprawdza opóźnienie sondy szerokopasmowej po odcięciu paliwa przy hamowaniu silnikiem
@@ -690,61 +795,112 @@ class AnomalyEngine {
     }
   }
 
-  /// Sprawdza anomalie korekt paliwowych (STFT / LTFT)
-  static void _checkFuelTrims(List<LogPoint> points, List<Anomaly> anomalies) {
-    final hasStft = points.any((p) => p.values.containsKey("STFT"));
-    final hasLtft = points.any((p) => p.values.containsKey("LTFT"));
-    if (!hasStft && !hasLtft) return;
+  /// Prawidłowa korekta paliwa (odrzuca wartości-wartowniki ±99–100% z pętli otwartej).
+  static double? _validTrim(LogPoint p, String key) {
+    final v = p.values[key];
+    if (v == null || !v.isFinite || v.abs() >= 99.0) return null;
+    return v;
+  }
 
+  static double _median(List<double> v) {
+    final s = [...v]..sort();
+    return s.length.isOdd ? s[s.length ~/ 2] : (s[s.length ~/ 2 - 1] + s[s.length ~/ 2]) / 2;
+  }
+
+  /// Sprawdza korekty paliwowe (STFT + LTFT) w ustalonej, rozgrzanej jeździe w pętli zamkniętej.
+  /// Ocena na medianie, a nie na pojedynczej próbce — chwilowe skoki przy zmianie obciążenia
+  /// są normalne. Rozróżnia „ubogo tylko na wolnych obrotach” (lewe powietrze) od „ubogo wszędzie”.
+  static void _checkFuelTrims(List<LogPoint> points, List<Anomaly> anomalies) {
+    final idle = <double>[];
+    final cruise = <double>[];
+    final samples = <LogPoint>[];
     for (final p in points) {
-      final totalTrim = p.stft + p.ltft;
-      if (totalTrim > 18.0) {
-        anomalies.add(Anomaly(
-          id: "trim_pos_${p.timeMs.toInt()}",
-          title: "Bardzo wysokie dodatnie korekty paliwa (Zubożenie mieszanki)",
-          severity: AnomalySeverity.warning,
-          paramKey: "STFT",
-          startMs: p.timeMs,
-          endMs: p.timeMs + 1000,
-          startRpm: p.rpm,
-          endRpm: p.rpm,
-          observedValueText: "Korekty łączne: +${totalTrim.toStringAsFixed(1)}%",
-          description: "Sterownik ECU musi mocno dolewać paliwa (+${totalTrim.toStringAsFixed(1)}%), ponieważ rejestruje nadmiar tlenu w spalinach.",
-          hypotheses: [
-            "Nieszczelność podciśnienia w kolektorze ssącym (lewe powietrze)",
-            "Nieszczelna odma olejowa lub uszkodzony zawór PCV",
-            "Niskie ciśnienie paliwa lub przypchane wtryskiwacze",
-          ],
-          recommendations: [
-            "Wykonaj próbę dymową podciśnień.",
-            "Sprawdź zawór PCV i węże odpowietrzenia skrzyni korbowej.",
-          ],
-        ));
-        break;
-      } else if (totalTrim < -18.0) {
-        anomalies.add(Anomaly(
-          id: "trim_neg_${p.timeMs.toInt()}",
-          title: "Bardzo wysokie ujemne korekty paliwa (Przelanie mieszanki)",
-          severity: AnomalySeverity.warning,
-          paramKey: "STFT",
-          startMs: p.timeMs,
-          endMs: p.timeMs + 1000,
-          startRpm: p.rpm,
-          endRpm: p.rpm,
-          observedValueText: "Korekty łączne: ${totalTrim.toStringAsFixed(1)}%",
-          description: "Sterownik ECU mocno odejmuje paliwo (${totalTrim.toStringAsFixed(1)}%), ponieważ mieszanka jest zbyt bogata.",
-          hypotheses: [
-            "Nieszczelny, lejący wtryskiwacz paliwa",
-            "Uszkodzony lub stale otwarty elektrozawór odpowietrzania oparów paliwa (EVAP)",
-            "Zbyt wysokie ciśnienie paliwa (uszkodzony regulator)",
-          ],
-          recommendations: [
-            "Sprawdź szczelność wtryskiwaczy na stole probierczym.",
-            "Odłącz zawór EVAP i sprawdź, czy korekty wrócą do normy.",
-          ],
-        ));
-        break;
+      final st = _validTrim(p, "STFT");
+      final lt = _validTrim(p, "LTFT");
+      if (st == null && lt == null) continue;
+      if (p.has("ECT") && p.ect < 70) continue; // zimny silnik — pętla otwarta
+      if (p.rpm < 500) continue;
+      final hasThrottle = p.has("PEDAL") || p.has("TPS");
+      if (hasThrottle && p.tps > 80) continue; // pełny gaz — wzbogacenie w pętli otwartej
+      if (hasThrottle && p.tps < 3 && p.rpm > 1300) continue; // hamowanie silnikiem — odcięcie paliwa
+      final total = (st ?? 0) + (lt ?? 0);
+      samples.add(p);
+      if (p.rpm < 1100 && (!hasThrottle || p.tps < 5)) {
+        idle.add(total);
+      } else {
+        cruise.add(total);
       }
+    }
+    final all = [...idle, ...cruise];
+    if (all.length < 20) return; // za mało danych z pętli zamkniętej
+
+    final med = _median(all);
+    final idleMed = idle.length >= 10 ? _median(idle) : null;
+    final cruiseMed = cruise.length >= 10 ? _median(cruise) : null;
+    final first = samples.first;
+    final last = samples.last;
+    String part(double? v) => v == null ? "—" : "${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)}%";
+
+    // Ubogo głównie na wolnych obrotach, w jeździe w normie → lewe powietrze
+    final vacuumLeak = idleMed != null && idleMed > 12 && (cruiseMed == null || cruiseMed < idleMed - 8);
+    if (med > 15 || vacuumLeak) {
+      anomalies.add(Anomaly(
+        id: "trim_pos_${first.timeMs.toInt()}",
+        title: vacuumLeak
+            ? "Uboga mieszanka na wolnych obrotach (lewe powietrze)"
+            : "Wysokie dodatnie korekty paliwa (uboga mieszanka)",
+        severity: AnomalySeverity.warning,
+        paramKey: "STFT",
+        startMs: first.timeMs,
+        endMs: last.timeMs,
+        startRpm: first.rpm,
+        endRpm: last.rpm,
+        observedValueText: "Korekty łączne (mediana): ${part(med)}; wolne obroty ${part(idleMed)}, jazda ${part(cruiseMed)}",
+        plainSummary: vacuumLeak
+            ? "Na wolnych obrotach sterownik musi mocno dolewać paliwa, a w jeździe już nie — to typowy objaw zasysania "
+                "powietrza przez nieszczelność (wąż podciśnienia, odma, uszczelka kolektora)."
+            : "Sterownik stale dolewa paliwa, bo w spalinach jest za dużo tlenu. Przyczyną bywa nieszczelność dolotu, "
+                "za niskie ciśnienie paliwa, przepływomierz lub brudne wtryskiwacze.",
+        description: "W ustalonej jeździe na rozgrzanym silniku sterownik utrzymuje dodatnie korekty paliwa "
+            "(mediana ${part(med)}), czyli kompensuje zbyt ubogą mieszankę.",
+        hypotheses: [
+          if (vacuumLeak) "Nieszczelność podciśnienia (wąż, kolektor, serwo hamulca, odma/PCV)",
+          if (!vacuumLeak) "Nieszczelność dolotu za przepływomierzem",
+          "Zaniżający przepływomierz powietrza (MAF)",
+          "Za niskie ciśnienie paliwa (pompa, filtr, regulator)",
+          "Przytkane wtryskiwacze",
+        ],
+        recommendations: [
+          if (vacuumLeak) "Wykonaj próbę dymową podciśnień, sprawdź odmę (PCV) i węże serwa.",
+          if (!vacuumLeak) "Sprawdź szczelność dolotu i porównaj odczyt MAF z wartością wzorcową.",
+          "Zmierz ciśnienie paliwa pod obciążeniem.",
+        ],
+      ));
+    } else if (med < -15) {
+      anomalies.add(Anomaly(
+        id: "trim_neg_${first.timeMs.toInt()}",
+        title: "Wysokie ujemne korekty paliwa (bogata mieszanka)",
+        severity: AnomalySeverity.warning,
+        paramKey: "STFT",
+        startMs: first.timeMs,
+        endMs: last.timeMs,
+        startRpm: first.rpm,
+        endRpm: last.rpm,
+        observedValueText: "Korekty łączne (mediana): ${part(med)}; wolne obroty ${part(idleMed)}, jazda ${part(cruiseMed)}",
+        plainSummary: "Sterownik stale odejmuje paliwo, bo mieszanka jest za bogata. Często winny jest lejący wtryskiwacz, "
+            "zawór odpowietrzania zbiornika (EVAP) albo za wysokie ciśnienie paliwa.",
+        description: "W ustalonej jeździe na rozgrzanym silniku sterownik utrzymuje ujemne korekty paliwa (mediana ${part(med)}).",
+        hypotheses: const [
+          "Nieszczelny, lejący wtryskiwacz paliwa",
+          "Stale otwarty zawór odpowietrzania oparów paliwa (EVAP)",
+          "Zbyt wysokie ciśnienie paliwa (regulator)",
+          "Zawyżający przepływomierz / czujnik MAP",
+        ],
+        recommendations: const [
+          "Odłącz zawór EVAP i sprawdź, czy korekty wracają do normy.",
+          "Sprawdź szczelność wtryskiwaczy i ciśnienie paliwa.",
+        ],
+      ));
     }
   }
 
@@ -1165,3 +1321,12 @@ class AnomalyEngine {
   }
 }
 
+/// Pojedyncze cofnięcie zapłonu pod obciążeniem.
+class _KnockEvent {
+  final LogPoint start;
+  final LogPoint minPoint;
+  final double baseline;
+  final double minIgn;
+  const _KnockEvent(this.start, this.minPoint, this.baseline, this.minIgn);
+  double get retard => baseline - minIgn;
+}

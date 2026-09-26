@@ -10,6 +10,7 @@ import '../services/datalogger_service.dart';
 import '../services/report_builder.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui.dart';
+import '../widgets/vin_dialog.dart';
 import '../models/engine_profiles.dart';
 import '../models/engine_specs.dart';
 import '../services/engine_memory.dart';
@@ -75,7 +76,9 @@ class DiagnosticScreen extends StatelessWidget {
             const Notice("Brak logu do analizy. Nagraj jazdę w zakładce Rejestrator albo wybierz log w Historii.")
           else ...[
             _sessionSummary(session),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+            _VinRow(session: session),
+            const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
@@ -159,8 +162,10 @@ class DiagnosticScreen extends StatelessWidget {
             cell(session.mode == LogMode.pull ? "Przyspieszenie" : "Jazda", "${session.durationSec.toStringAsFixed(1)} s"),
             div,
             cell("Maks. obroty", "${session.peakRpm.toInt()}"),
-            div,
-            cell("Maks. doładowanie", "${session.peakBoost.toStringAsFixed(2)} bar"),
+            if (session.hasBoostData) ...[
+              div,
+              cell("Maks. doładowanie", "${session.peakBoost.toStringAsFixed(2)} bar"),
+            ],
           ],
         ),
       ),
@@ -653,6 +658,42 @@ class _EnginePickerState extends State<_EnginePicker> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// VIN zapisanego logu: podgląd albo „Dodaj VIN” (wpisanie / aparat), gdy sterownik go nie podał.
+class _VinRow extends StatelessWidget {
+  final LogSession session;
+  const _VinRow({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    final hasVin = session.vin.length == 17;
+    return Row(
+      children: [
+        Icon(hasVin ? Icons.directions_car_outlined : Icons.info_outline,
+            size: 16, color: hasVin ? AppTheme.textMuted : AppTheme.warn),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            hasVin ? "VIN ${session.vin}" : "Brak VIN w tym logu — raport i rozpoznanie silnika będą uboższe",
+            style: TextStyle(
+              color: hasVin ? AppTheme.textSecondary : AppTheme.warn,
+              fontSize: 12.5,
+              fontFamily: hasVin ? "monospace" : null,
+            ),
+          ),
+        ),
+        TextButton(
+          onPressed: () async {
+            final vin = await showVinDialog(context, initial: hasVin ? session.vin : "");
+            if (vin == null || !context.mounted) return;
+            await context.read<DataloggerService>().setSessionVin(session, vin);
+          },
+          child: Text(hasVin ? "Zmień" : "Dodaj VIN"),
+        ),
+      ],
     );
   }
 }

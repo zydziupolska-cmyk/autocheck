@@ -44,6 +44,9 @@ dependencies:
   csv: ^8.0.0
   flutter_bluetooth_serial: ^0.4.0
   file_picker: ^13.1.0
+  image_picker: ^1.2.3
+  google_mlkit_text_recognition: ^0.17.1
+  google_mlkit_barcode_scanning: ^0.16.1
 
 dev_dependencies:
   flutter_test:

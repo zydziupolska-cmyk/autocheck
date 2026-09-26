@@ -1577,7 +1577,7 @@ class ObdService extends ChangeNotifier {
       }
 
       _vehicleInfo = VehicleInfo.decodeFromRawData(
-        rawVin: vin.isNotEmpty ? vin.first : "BRAK-VIN",
+        rawVin: vin.isNotEmpty ? vin.first : "",
         rawCalId: calIds.isNotEmpty ? calIds.join(" / ") : null,
         rawEcuName: ecuName.isNotEmpty ? ecuName.first : null,
         protocol: _protocolName.isNotEmpty ? _protocolName : null,
@@ -1591,6 +1591,15 @@ class ObdService extends ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Ustawia VIN wpisany ręcznie lub zeskanowany aparatem (gdy sterownik go nie podaje).
+  void setManualVin(String vin) {
+    final v = _vehicleInfo;
+    if (v == null) return;
+    _vehicleInfo = v.applyVin(vin);
+    logEvent("VIN ustawiony ręcznie: ${_vehicleInfo!.vin}");
+    notifyListeners();
   }
 
   @override

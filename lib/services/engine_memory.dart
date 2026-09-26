@@ -47,6 +47,8 @@ class EngineMemory extends ChangeNotifier {
       final p = EngineProfiles.byCode(code);
       if (p != null) return EngineMatch(p, EngineConfidence.confirmed, "wybór zapamiętany dla tego auta");
     }
+    final fromVin = _fromVinEngineType(info.vin);
+    if (fromVin != null) return fromVin;
     final vinMake = VinDecoder.decode(info.vin).make;
     return EngineProfiles.identify(engineHaystack(info), vinMake: vinMake);
   }
@@ -58,8 +60,18 @@ class EngineMemory extends ChangeNotifier {
       final p = EngineProfiles.byCode(code);
       if (p != null) return EngineMatch(p, EngineConfidence.confirmed, "wybór zapamiętany dla tego auta");
     }
+    final fromVin = _fromVinEngineType(vin);
+    if (fromVin != null) return fromVin;
     final vinMake = vin.length == 17 ? VinDecoder.decode(vin).make : null;
     return EngineProfiles.identify(engineInfo, vinMake: vinMake);
+  }
+
+  /// Silnik z kodu typu zapisanego w VIN (PSA: znaki 6–8, np. „RFN”).
+  static EngineMatch? _fromVinEngineType(String vin) {
+    final code = VinDecoder.psaEngineType(vin);
+    final p = EngineProfiles.byEngineTypeCode(code);
+    if (p == null) return null;
+    return EngineMatch(p, EngineConfidence.high, "typ silnika z numeru VIN: $code");
   }
 
   /// Tekst z danych pojazdu do rozpoznania silnika.

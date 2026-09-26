@@ -111,6 +111,22 @@ class LogSession {
         engineCode: engineCode,
       );
 
+  /// Kopia z uzupełnionym VIN-em i etykietą pojazdu (np. VIN wpisany po nagraniu).
+  LogSession withVehicle({required String vin, String? vehicleLabel}) => LogSession(
+        id: id,
+        title: title,
+        createdAt: createdAt,
+        activePidKeys: activePidKeys,
+        points: points,
+        isDiesel: isDiesel,
+        vehicleLabel: vehicleLabel ?? this.vehicleLabel,
+        mode: mode,
+        dtcCodes: dtcCodes,
+        engineInfo: engineInfo,
+        vin: vin,
+        engineCode: engineCode,
+      );
+
   Map<String, dynamic> toJson() => {
         "id": id,
         "title": title,
@@ -150,6 +166,9 @@ class LogSession {
     if (points.isEmpty) return 0;
     return points.map((p) => p.boost).reduce((a, b) => a > b ? a : b);
   }
+
+  /// Czy log dotyczy silnika doładowanego (inaczej „maks. doładowanie” nie ma sensu).
+  bool get hasBoostData => points.any((p) => p.has("TARGET_BOOST")) || peakBoost >= 0.15;
 
   double get minAfr {
     if (points.isEmpty) return 14.7;

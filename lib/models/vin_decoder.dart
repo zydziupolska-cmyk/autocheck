@@ -52,6 +52,47 @@ class VinDecoder {
     return y1;
   }
 
+  /// Oczyszcza zapis VIN (spacje, myślniki, małe litery) i poprawia typowe pomyłki
+  /// odczytu: O/Q → 0, I → 1 (tych liter nie ma w VIN).
+  static String normalize(String raw) => raw
+      .toUpperCase()
+      .replaceAll(RegExp(r'[\s\-\.]'), '')
+      .replaceAll('O', '0')
+      .replaceAll('Q', '0')
+      .replaceAll('I', '1');
+
+  /// Czy tekst jest poprawnym numerem VIN (17 znaków, bez I/O/Q).
+  static bool isValid(String vin) => RegExp(r'^[A-HJ-NPR-Z0-9]{17}$').hasMatch(vin);
+
+  /// Cyfra kontrolna (poz. 9) wg ISO 3779 — obowiązkowa w USA/Kanadzie, w Europie
+  /// często nieużywana. Poprawna = mocne potwierdzenie odczytu.
+  static bool hasValidCheckDigit(String vin) {
+    if (!isValid(vin)) return false;
+    const map = {
+      'A': 1, 'B': 2, 'C': 3, 'D': 4, 'E': 5, 'F': 6, 'G': 7, 'H': 8, 'J': 1, 'K': 2, 'L': 3, 'M': 4,
+      'N': 5, 'P': 7, 'R': 9, 'S': 2, 'T': 3, 'U': 4, 'V': 5, 'W': 6, 'X': 7, 'Y': 8, 'Z': 9,
+    };
+    const weights = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
+    int sum = 0;
+    for (int i = 0; i < 17; i++) {
+      final c = vin[i];
+      final v = int.tryParse(c) ?? map[c] ?? 0;
+      sum += v * weights[i];
+    }
+    final r = sum % 11;
+    return vin[8] == (r == 10 ? 'X' : r.toString());
+  }
+
+  /// PSA (Peugeot/Citroën/DS): znaki 6–8 VIN to zwykle typ silnika z tabliczki
+  /// (np. „RFN” = 2.0 16V EW10J4, „9HZ” = 1.6 HDi). Null dla innych marek.
+  static String? psaEngineType(String rawVin) {
+    final vin = rawVin.trim().toUpperCase();
+    if (!isValid(vin)) return null;
+    const psa = {"VF3", "VF7", "VR3", "VR7", "VR1"};
+    if (!psa.contains(vin.substring(0, 3))) return null;
+    return vin.substring(5, 8);
+  }
+
   static VinInfo decode(String rawVin) {
     final vin = rawVin.trim().toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
     if (vin.length != 17) return VinInfo(vin);

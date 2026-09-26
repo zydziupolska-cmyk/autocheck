@@ -92,6 +92,10 @@ class ObdPid {
   // Pomocnicze dekodery
   // ---------------------------------------------------------------------------
 
+  /// Korekta paliwa (%). Bajty 0x00/0xFF (−100% / +99,2%) to wartości „brak danych” —
+  /// sterownik w pętli otwartej lub nieobsługiwany bank — a nie prawdziwa korekta.
+  static double _trim(int a) => (a == 0x00 || a == 0xFF) ? double.nan : (a - 128.0) * 100.0 / 128.0;
+
   static double _u8(List<int> b, int i, double Function(int a) f) => b.length > i ? f(b[i]) : double.nan;
 
   static double _u16(List<int> b, int i, double Function(int v) f) =>
@@ -313,13 +317,13 @@ class ObdPid {
     ObdPid(
       code: "0106", shortName: "STFT", name: "Krótka korekta paliwa", unit: "%",
       category: PidCategory.fuel, colorValue: 0xFFFFBE0B, minExpected: -25, maxExpected: 25,
-      decoder: (b) => _u8(b, 0, (a) => (a - 128.0) * 100.0 / 128.0),
+      decoder: (b) => _u8(b, 0, _trim),
     ),
     ObdPid(
       code: "0107", shortName: "LTFT", name: "Długa korekta paliwa", unit: "%",
       category: PidCategory.fuel, colorValue: 0xFFFB5607, minExpected: -25, maxExpected: 25,
       rate: PollRate.slow,
-      decoder: (b) => _u8(b, 0, (a) => (a - 128.0) * 100.0 / 128.0),
+      decoder: (b) => _u8(b, 0, _trim),
     ),
     ObdPid(
       code: "0114", shortName: "O2_V", name: "Napięcie sondy lambda (B1S1)", unit: "V",
