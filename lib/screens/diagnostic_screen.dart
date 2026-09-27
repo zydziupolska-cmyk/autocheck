@@ -11,6 +11,7 @@ import '../services/report_builder.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ui.dart';
 import '../widgets/vin_dialog.dart';
+import 'evap_test_screen.dart';
 import '../models/engine_profiles.dart';
 import '../models/engine_specs.dart';
 import '../services/engine_memory.dart';
@@ -369,6 +370,14 @@ class _AnomalyCardState extends State<AnomalyCard> {
                   if (a.description.isNotEmpty) ...[
                     Text(a.description, style: const TextStyle(color: AppTheme.textMuted, fontSize: 12.5, height: 1.4)),
                     const SizedBox(height: 12),
+                  ],
+                  if (a.id.startsWith("idle_hunting_")) ...[
+                    FilledButton.icon(
+                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EvapTestScreen())),
+                      icon: const Icon(Icons.local_gas_station_outlined, size: 18),
+                      label: const Text("Uruchom test zaworu EVAP"),
+                    ),
+                    const SizedBox(height: 8),
                   ],
                   if (onShowChart != null)
                     OutlinedButton.icon(

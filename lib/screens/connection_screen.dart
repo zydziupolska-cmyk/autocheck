@@ -8,6 +8,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart' as fbs;
 import 'package:provider/provider.dart';
 import '../models/dtc_code.dart';
+import 'evap_test_screen.dart';
 import '../services/datalogger_service.dart';
 import '../widgets/vin_dialog.dart';
 import '../services/dtc_user_descriptions.dart';
@@ -621,6 +622,14 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                 ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.account_tree_outlined, size: 18),
             label: Text(_moduleScanProgress ?? "Skanuj wszystkie moduły (VAG)"),
+          ),
+        ],
+        if (!(obd.vehicleInfo?.isDiesel ?? false)) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EvapTestScreen())),
+            icon: const Icon(Icons.local_gas_station_outlined, size: 18),
+            label: const Text("Test zaworu EVAP (falowanie na wolnych)"),
           ),
         ],
         const SizedBox(height: 8),

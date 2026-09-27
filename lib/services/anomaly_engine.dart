@@ -4,6 +4,8 @@ import '../models/log_point.dart';
 import '../models/trip_report.dart';
 import 'analysis/drive_analyzer.dart';
 import 'analysis/drive_state.dart';
+import 'analysis/signal_stats.dart';
+import 'analysis/evap_test.dart';
 import '../models/engine_profiles.dart';
 
 class AnomalyEngine {
@@ -18,6 +20,12 @@ class AnomalyEngine {
     final points = DriveState.forwardFill(rawPoints);
 
     final List<Anomaly> anomalies = [];
+
+    // Log z prowadzonego testu EVAP: rozstrzyga sam test (ogólne reguły biegu jałowego
+    // dałyby tu mylące, sprzeczne podpowiedzi)
+    if (points.any((p) => p.has(evapTestPhaseKey))) {
+      return [EvapTestVerdict.evaluate(points).toAnomaly(points)];
+    }
 
     // 1. Wykryj próby przyspieszenia (WOT - Wide Open Throttle)
     final wotWindows = _detectWotWindows(points, isDiesel: isDiesel);
@@ -175,38 +183,15 @@ class AnomalyEngine {
   /// Mediana odstępu między próbkami (ms). Adaptery i protokoły różnią się ogromnie:
   /// szybki CAN daje kilkanaście próbek/s, stare auta na K-line nawet poniżej 1/s.
   /// Reguły muszą liczyć czas, a nie liczbę próbek.
-  static double _medianDtMs(List<LogPoint> pts) {
-    final d = <double>[];
-    for (int i = 1; i < pts.length; i++) {
-      final dt = pts[i].timeMs - pts[i - 1].timeMs;
-      if (dt > 0) d.add(dt);
-    }
-    if (d.isEmpty) return 500;
-    return _median(d);
-  }
+  static double _medianDtMs(List<LogPoint> pts) => SignalStats.medianDtMs(pts);
 
   /// Łączny czas trwania wybranych próbek (sumuje odstępy nie dłuższe niż [maxGapMs]).
-  static double _durationMs(List<LogPoint> pts, double maxGapMs) {
-    double t = 0;
-    for (int i = 1; i < pts.length; i++) {
-      final dt = pts[i].timeMs - pts[i - 1].timeMs;
-      if (dt > 0 && dt <= maxGapMs) t += dt;
-    }
-    return t;
-  }
+  static double _durationMs(List<LogPoint> pts, double maxGapMs) => SignalStats.durationMs(pts, maxGapMs);
 
   /// Suma prawidłowych korekt (STFT + LTFT) albo null, gdy żadnej nie ma.
-  static double? _totalTrim(LogPoint p) {
-    final st = _validTrim(p, "STFT");
-    final lt = _validTrim(p, "LTFT");
-    if (st == null && lt == null) return null;
-    return (st ?? 0) + (lt ?? 0);
-  }
+  static double? _totalTrim(LogPoint p) => SignalStats.totalTrim(p);
 
-  static double _pct(List<double> v, double q) {
-    final s = [...v]..sort();
-    return s[((s.length - 1) * q).round()];
-  }
+  static double _pct(List<double> v, double q) => SignalStats.pct(v, q);
 
   /// Czy próbka jest pod wyraźnym obciążeniem (tylko wtedy cofnięcie zapłonu może oznaczać stuk).
   static bool _underLoad(LogPoint p) {
@@ -839,16 +824,9 @@ class AnomalyEngine {
 
   /// Prawidłowa korekta paliwa. Sterowniki ograniczają korektę do ok. ±25–35%, więc wartości
   /// powyżej ±50% to „brak danych” (np. 0xFF = +99,2% w pętli otwartej) albo śmieci odczytu.
-  static double? _validTrim(LogPoint p, String key) {
-    final v = p.values[key];
-    if (v == null || !v.isFinite || v.abs() > 50.0) return null;
-    return v;
-  }
+  static double? _validTrim(LogPoint p, String key) => SignalStats.validTrim(p, key);
 
-  static double _median(List<double> v) {
-    final s = [...v]..sort();
-    return s.length.isOdd ? s[s.length ~/ 2] : (s[s.length ~/ 2 - 1] + s[s.length ~/ 2]) / 2;
-  }
+  static double _median(List<double> v) => SignalStats.median(v);
 
   /// Sprawdza korekty paliwowe (STFT + LTFT) w ustalonej, rozgrzanej jeździe w pętli zamkniętej.
   /// Ocena na medianie, a nie na pojedynczej próbce — chwilowe skoki przy zmianie obciążenia
@@ -949,30 +927,7 @@ class AnomalyEngine {
 
   /// Liczba zmian kierunku obrotów (szczyt ↔ dołek) z histerezą — odróżnia falowanie
   /// od jednostajnego spadku obrotów po rozgrzaniu silnika.
-  static int _rpmReversals(List<LogPoint> w, {double hysteresis = 80}) {
-    if (w.length < 3) return 0;
-    int reversals = 0;
-    int dir = 0; // 1 = rośnie, -1 = spada
-    double extreme = w.first.rpm;
-    for (final p in w.skip(1)) {
-      if (dir >= 0 && p.rpm > extreme) {
-        extreme = p.rpm;
-        dir = 1;
-      } else if (dir <= 0 && p.rpm < extreme) {
-        extreme = p.rpm;
-        dir = -1;
-      } else if (dir == 1 && extreme - p.rpm >= hysteresis) {
-        reversals++;
-        dir = -1;
-        extreme = p.rpm;
-      } else if (dir == -1 && p.rpm - extreme >= hysteresis) {
-        reversals++;
-        dir = 1;
-        extreme = p.rpm;
-      }
-    }
-    return reversals;
-  }
+  static int _rpmReversals(List<LogPoint> w) => SignalStats.rpmReversals(w);
 
   /// Sprawdza falowanie obrotów na biegu jałowym i wskazuje przyczynę (EVAP / lewe powietrze / VVT).
   ///

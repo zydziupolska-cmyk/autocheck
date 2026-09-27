@@ -100,6 +100,9 @@ class MockElm327 {
   /// Obroty zwracane przez ECU silnika.
   double rpm = 850;
 
+  /// Surowa krótka korekta paliwa (bajt A PID 06; 128 = 0%).
+  int stftRaw = 128;
+
   // --- Stan silnika sterowany przez testy (np. symulacja przyspieszenia) ---
   double pedalPct = 0; // pedał gazu 0-100%
   double mapKpa = 101; // ciśnienie w kolektorze (bezwzględne)
@@ -477,7 +480,7 @@ class MockElm327 {
         if (!_supported.contains(pid) && !hiddenPids.contains(pid)) return null;
         switch (pid) {
           case 0x06:
-            return [0x41, 0x06, 128]; // STFT 0%
+            return [0x41, 0x06, stftRaw]; // STFT (domyślnie 0%)
           case 0x07:
             return [0x41, 0x07, 133]; // LTFT +3.9%
           case 0x0E:

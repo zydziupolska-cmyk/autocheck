@@ -399,6 +399,18 @@ class DataloggerService extends ChangeNotifier {
   static String _codeFromVin(String vin) =>
       EngineProfiles.byEngineTypeCode(VinDecoder.psaEngineType(vin))?.code ?? "";
 
+  /// Dodaje gotowy log (np. z prowadzonego testu EVAP) do historii i otwiera go w Diagnozie.
+  Future<void> addSession(LogSession session) async {
+    if (_isRecording) return;
+    _sessionsHistory.removeWhere((s) => s.id == session.id);
+    _sessionsHistory.insert(0, session);
+    _activeSession = session;
+    _currentPoints = List.from(session.points);
+    _reanalyzeActive();
+    notifyListeners();
+    if (persistHistory) await _saveSession(session);
+  }
+
   /// Uzupełnia VIN zapisanego logu (wpisany ręcznie lub zeskanowany) i ponawia analizę,
   /// żeby raport i rozpoznanie silnika miały właściwe dane.
   Future<void> setSessionVin(LogSession session, String vin) async {
