@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -86,6 +87,12 @@ class DataloggerService extends ChangeNotifier {
   PullState _pullState = PullState.idle;
   String? _pullMessage;
   final Map<String, double> _latest = {}; // ostatnie znane wartości (do wykrywania stanu)
+
+  /// Wyuczone położenie przepustnicy przy puszczonym gazie (PID 11 bywa 8–20%, nie 0%).
+  double? _tpsClosed;
+
+  /// Bieżące wartości z przepustnicą przeliczoną na otwarcie 0–100% — do rozpoznawania stanu jazdy.
+  Map<String, double> get _state => DriveState.withThrottleOpening(_latest, closed: _tpsClosed, isDiesel: _isDiesel);
   int _pullStartIndex = 0;
   double _pullStartMs = 0;
   double _pullPeakRpm = 0;
@@ -447,6 +454,10 @@ class DataloggerService extends ChangeNotifier {
     final prevTime = _currentPoints.isNotEmpty ? _currentPoints.last.timeMs : point.timeMs;
     _currentPoints.add(point);
     _latest.addAll(point.values);
+    final tps = point.values["TPS"];
+    if (tps != null && tps > 0.5 && DriveState.isThrottleClosedCandidate(_latest)) {
+      _tpsClosed = _tpsClosed == null ? tps : min(_tpsClosed!, tps);
+    }
     _samplesCountLastSec++;
 
     final now = DateTime.now();
@@ -475,7 +486,7 @@ class DataloggerService extends ChangeNotifier {
     final rpm = _latest["RPM"];
 
     if (_pullState == PullState.armed) {
-      if (DriveState.isFullThrottle(_latest, isDiesel: diesel) && rpm != null) {
+      if (DriveState.isFullThrottle(_state, isDiesel: diesel) && rpm != null) {
         _pullState = PullState.capturing;
         _pullStartMs = point.timeMs;
         _pullStartRpm = rpm;
@@ -498,7 +509,7 @@ class DataloggerService extends ChangeNotifier {
     if (_pullState != PullState.capturing) return;
     if (rpm != null && rpm > _pullPeakRpm) _pullPeakRpm = rpm;
 
-    final released = DriveState.isThrottleReleased(_latest, isDiesel: diesel);
+    final released = DriveState.isThrottleReleased(_state, isDiesel: diesel);
     if (released) {
       _releaseSinceMs ??= point.timeMs;
     } else {
@@ -531,14 +542,14 @@ class DataloggerService extends ChangeNotifier {
     _live.durationSec = (point.timeMs - _currentPoints.first.timeMs) / 1000.0;
     final speed = _latest["SPEED"];
     if (speed != null) _live.distanceKm += speed * dtSec / 3600.0;
-    if (DriveState.isIdle(_latest, isDiesel: diesel)) _live.idleSec += dtSec;
+    if (DriveState.isIdle(_state, isDiesel: diesel)) _live.idleSec += dtSec;
     final boost = _latest["BOOST"];
     if (boost != null && (!_live.maxBoost.isFinite || boost > _live.maxBoost)) _live.maxBoost = boost;
     final ect = _latest["ECT"];
     if (ect != null && (!_live.maxEct.isFinite || ect > _live.maxEct)) _live.maxEct = ect;
 
     final rpm = _latest["RPM"] ?? 0;
-    final wot = DriveState.isFullThrottle(_latest, isDiesel: diesel);
+    final wot = DriveState.isFullThrottle(_state, isDiesel: diesel);
     if (wot) {
       _live.fullThrottleSec += dtSec;
       if (!_liveInPull) {

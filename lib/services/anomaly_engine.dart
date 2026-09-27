@@ -17,7 +17,10 @@ class AnomalyEngine {
   static List<Anomaly> analyzeSession(List<LogPoint> rawPoints, {bool isDiesel = false, List<String> dtcCodes = const [], String engineInfo = "", String engineCode = ""}) {
     if (rawPoints.length < 5) return [];
     // Wolne kanały są odpytywane rzadziej — uzupełnij je ostatnią znaną wartością
-    final points = DriveState.forwardFill(rawPoints);
+    // Przy wolnym odczycie (K-line) parametry przychodzą co kilka sekund — uzupełniamy
+    // dłużej; przepustnicę przeliczamy na otwarcie 0–100% (położenie zamknięte bywa 8–20%).
+    final fillAge = max(3000.0, SignalStats.medianDtMs(rawPoints) * 2.5);
+    final points = DriveState.normalizeThrottle(DriveState.forwardFill(rawPoints, maxAgeMs: fillAge), isDiesel: isDiesel);
 
     final List<Anomaly> anomalies = [];
 

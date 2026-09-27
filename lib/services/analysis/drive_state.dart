@@ -1,3 +1,4 @@
+import 'dart:math';
 import '../../models/log_point.dart';
 
 /// Klasyfikacja stanu jazdy na podstawie bieżących wartości czujników.
@@ -35,6 +36,62 @@ class DriveState {
     if (speed != null && speed > 3) return false;
     final demand = driverDemand(v, isDiesel: isDiesel);
     return demand == null || demand <= 10;
+  }
+
+  /// Typowe bezwzględne położenie przepustnicy (PID 11) przy pełnym gazie.
+  static const double absThrottleFullOpen = 82;
+
+  /// Położenie przepustnicy z OBD (PID 11) jest bezwzględne: przy puszczonym gazie wiele aut
+  /// pokazuje 8–20% (np. Peugeot EW10 ok. 11%), przy pełnym 75–90%. Przeliczamy na otwarcie
+  /// 0–100% względem wartości „zamkniętej” danego auta, żeby progi (wolne obroty, pełny gaz)
+  /// działały w każdym samochodzie.
+  static double throttleOpening(double tps, double closed, {double open = absThrottleFullOpen}) {
+    final o = max(open, closed + 30);
+    return ((tps - closed) / (o - closed) * 100).clamp(0.0, 100.0).toDouble();
+  }
+
+  /// Czy w tej chwili gaz na pewno jest puszczony: silnik pracuje na wolnych obrotach
+  /// albo z bardzo małym obciążeniem (hamowanie silnikiem).
+  static bool isThrottleClosedCandidate(Map<String, double> v) {
+    final rpm = v["RPM"] ?? 0;
+    if (rpm < 400) return false;
+    final load = v["LOAD"];
+    return rpm < 1100 || (load != null && load < 12);
+  }
+
+  /// Kopia wartości z przepustnicą przeliczoną na otwarcie (benzyna, gdy znamy położenie zamknięte).
+  static Map<String, double> withThrottleOpening(Map<String, double> v, {double? closed, required bool isDiesel}) {
+    final tps = v["TPS"];
+    if (isDiesel || closed == null || tps == null || closed > 30) return v;
+    return {...v, "TPS": throttleOpening(tps, closed)};
+  }
+
+  /// Przelicza przepustnicę w całym logu na otwarcie 0–100%. Położenie „zamknięte” to niski
+  /// percentyl wartości przy pracującym silniku, „pełne” — większe z typowego i najwyższego
+  /// zarejestrowanego. Diesel bez zmian (tam TPS to klapa dławiąca).
+  static List<LogPoint> normalizeThrottle(List<LogPoint> pts, {required bool isDiesel}) {
+    if (isDiesel) return pts;
+    // Położenie zamknięte uczymy się tylko z chwil, gdy gaz na pewno jest puszczony
+    // (wolne obroty albo bardzo małe obciążenie) — w logu z samą równą jazdą najniższa
+    // wartość wcale nie oznacza zamkniętej przepustnicy.
+    final closedSamples = [
+      for (final p in pts)
+        if (p.values["TPS"] != null && isThrottleClosedCandidate(p.values)) p.values["TPS"]!,
+    ]..sort();
+    if (closedSamples.length < 3) return pts;
+    final closed = closedSamples[(closedSamples.length * 0.1).floor()];
+    final running = [
+      for (final p in pts)
+        if (p.values["TPS"] != null && (p.values["RPM"] ?? 0) > 400) p.values["TPS"]!,
+    ]..sort();
+    if (closed <= 0.5 || closed > 30) return pts; // już względne albo nietypowe — bez zmian
+    final open = max(absThrottleFullOpen, running[((running.length - 1) * 0.99).round()]);
+    return [
+      for (final p in pts)
+        p.values.containsKey("TPS")
+            ? LogPoint(timeMs: p.timeMs, values: {...p.values, "TPS": throttleOpening(p.values["TPS"]!, closed, open: open)})
+            : p,
+    ];
   }
 
   /// Uzupełnia brakujące wartości ostatnią znaną (max [maxAgeMs] wstecz).
