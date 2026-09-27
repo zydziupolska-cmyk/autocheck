@@ -138,13 +138,14 @@ void main() {
 
   test('DPF EGR Delete scenario should detect tampering', () {
     // Ocena EGR wymaga jazdy przy częściowym obciążeniu (pod pełnym gazem każdy
-    // sprawny silnik zamyka EGR) — do przyspieszenia dokładamy 15 s wolnych obrotów.
+    // sprawny silnik zamyka EGR) na rozgrzanym dieslu przez co najmniej minutę —
+    // do przyspieszenia dokładamy 75 s wolnych obrotów.
     final pull = generateSyntheticRun(SyntheticScenario.dpfEgrDelete);
     final last = pull.last;
     final points = [
       ...pull,
       for (int i = 1; i <= 75; i++)
-        LogPoint(timeMs: last.timeMs + i * 200, values: {
+        LogPoint(timeMs: last.timeMs + i * 1000, values: {
           ...last.values,
           "RPM": 800,
           "TPS": 0,
@@ -154,7 +155,7 @@ void main() {
           "DPF_DP": 0,
         }),
     ];
-    final anomalies = AnomalyEngine.analyzeSession(points);
+    final anomalies = AnomalyEngine.analyzeSession(points, isDiesel: true);
     final hasDpfTampering = anomalies.any((a) => a.id.startsWith('dpf_delete_'));
     final hasEgrTampering = anomalies.any((a) => a.id.startsWith('egr_software_delete_'));
     expect(hasDpfTampering, isTrue);

@@ -29,7 +29,7 @@ class AnomalyEngine {
 
     final knockEvents = <_KnockEvent>[];
     for (final window in windowsToAnalyze) {
-      if (window.length < 5) continue;
+      if (window.length < 3) continue;
 
       // 1. Analiza cofania zapłonu (Knock / Timing Retard) — zdarzenia scalane niżej w jeden wynik
       if (!isDiesel) _collectKnockEvents(window, knockEvents);
@@ -150,7 +150,7 @@ class AnomalyEngine {
       if (isWot) {
         currentWindow.add(p);
       } else {
-        if (currentWindow.length >= 6) {
+        if (currentWindow.length >= 3) {
           final durationMs = currentWindow.last.timeMs - currentWindow.first.timeMs;
           final rpmGain = currentWindow.last.rpm - currentWindow.first.rpm;
           if (durationMs >= 1200 && rpmGain >= 1000) {
@@ -161,7 +161,7 @@ class AnomalyEngine {
       }
     }
 
-    if (currentWindow.length >= 6) {
+    if (currentWindow.length >= 3) {
       final durationMs = currentWindow.last.timeMs - currentWindow.first.timeMs;
       final rpmGain = currentWindow.last.rpm - currentWindow.first.rpm;
       if (durationMs >= 1200 && rpmGain >= 1000) {
@@ -170,6 +170,42 @@ class AnomalyEngine {
     }
 
     return windows;
+  }
+
+  /// Mediana odstępu między próbkami (ms). Adaptery i protokoły różnią się ogromnie:
+  /// szybki CAN daje kilkanaście próbek/s, stare auta na K-line nawet poniżej 1/s.
+  /// Reguły muszą liczyć czas, a nie liczbę próbek.
+  static double _medianDtMs(List<LogPoint> pts) {
+    final d = <double>[];
+    for (int i = 1; i < pts.length; i++) {
+      final dt = pts[i].timeMs - pts[i - 1].timeMs;
+      if (dt > 0) d.add(dt);
+    }
+    if (d.isEmpty) return 500;
+    return _median(d);
+  }
+
+  /// Łączny czas trwania wybranych próbek (sumuje odstępy nie dłuższe niż [maxGapMs]).
+  static double _durationMs(List<LogPoint> pts, double maxGapMs) {
+    double t = 0;
+    for (int i = 1; i < pts.length; i++) {
+      final dt = pts[i].timeMs - pts[i - 1].timeMs;
+      if (dt > 0 && dt <= maxGapMs) t += dt;
+    }
+    return t;
+  }
+
+  /// Suma prawidłowych korekt (STFT + LTFT) albo null, gdy żadnej nie ma.
+  static double? _totalTrim(LogPoint p) {
+    final st = _validTrim(p, "STFT");
+    final lt = _validTrim(p, "LTFT");
+    if (st == null && lt == null) return null;
+    return (st ?? 0) + (lt ?? 0);
+  }
+
+  static double _pct(List<double> v, double q) {
+    final s = [...v]..sort();
+    return s[((s.length - 1) * q).round()];
   }
 
   /// Czy próbka jest pod wyraźnym obciążeniem (tylko wtedy cofnięcie zapłonu może oznaczać stuk).
@@ -408,7 +444,8 @@ class AnomalyEngine {
     // 1. Sprawdzenie zamrożonego DPF (Wyprogramowanie w ECU lub emulator)
     if (points.any((p) => p.values.containsKey("DPF_DP"))) {
       final dpfPoints = points.where((p) => p.values.containsKey("DPF_DP")).toList();
-      if (dpfPoints.length > 20) {
+      final gap = max(1500.0, _medianDtMs(points) * 3);
+      if (dpfPoints.length >= 10 && _durationMs(dpfPoints, gap) >= 20000) {
         final rpmMin = dpfPoints.map((p) => p.rpm).reduce(min);
         final rpmMax = dpfPoints.map((p) => p.rpm).reduce(max);
         
@@ -446,15 +483,20 @@ class AnomalyEngine {
     }
 
     // 2. Sprawdzenie wyprogramowania lub zaślepienia EGR
-    if (points.any((p) => p.values.containsKey("EGR_CMD"))) {
+    // Oskarżenie o wycięcie EGR jest poważne — tylko diesel (w benzynie zawór EGR bywa stale
+    // zamknięty albo zastąpiony wewnętrzną recyrkulacją przez fazy rozrządu), tylko rozgrzany
+    // silnik (na zimnym sterownik celowo zamyka EGR) i co najmniej minuta takiej jazdy.
+    if (isDiesel && points.any((p) => p.values.containsKey("EGR_CMD"))) {
       // Tylko częściowe obciążenie i jałowy — pod pełnym gazem każdy sprawny silnik zamyka EGR
       final egrPoints = points
           .where((p) =>
               p.values.containsKey("EGR_CMD") &&
               p.rpm >= 600 &&
               p.rpm <= 3000 &&
+              (!p.has("ECT") || p.ect >= 70) &&
               !DriveState.isFullThrottle(p.values, isDiesel: isDiesel))
           .toList();
+      final egrGap = max(1500.0, _medianDtMs(points) * 3);
       
       // Detekcja Software Delete (Zawsze 0%)
       bool isSoftwareDeleted = true;
@@ -465,7 +507,7 @@ class AnomalyEngine {
         }
       }
 
-      if (isSoftwareDeleted && egrPoints.length > 50) {
+      if (isSoftwareDeleted && egrPoints.length >= 10 && _durationMs(egrPoints, egrGap) >= 60000) {
         anomalies.add(Anomaly(
           id: "egr_software_delete_${egrPoints.first.timeMs.toInt()}",
           title: "Wykryto Programowe Wyłączenie EGR",
@@ -795,10 +837,11 @@ class AnomalyEngine {
     }
   }
 
-  /// Prawidłowa korekta paliwa (odrzuca wartości-wartowniki ±99–100% z pętli otwartej).
+  /// Prawidłowa korekta paliwa. Sterowniki ograniczają korektę do ok. ±25–35%, więc wartości
+  /// powyżej ±50% to „brak danych” (np. 0xFF = +99,2% w pętli otwartej) albo śmieci odczytu.
   static double? _validTrim(LogPoint p, String key) {
     final v = p.values[key];
-    if (v == null || !v.isFinite || v.abs() >= 99.0) return null;
+    if (v == null || !v.isFinite || v.abs() > 50.0) return null;
     return v;
   }
 
@@ -904,180 +947,244 @@ class AnomalyEngine {
     }
   }
 
-  /// Sprawdza falowanie obrotów i drgania na biegu jałowym (np. Peugeot 2.0 16V EW10)
-  static void _checkIdleHunting(List<LogPoint> points, List<Anomaly> anomalies) {
-    // Bieg jałowy: silnik pracuje (RPM > 400), gaz puszczony, auto stoi (jeśli znamy prędkość).
-    // Bez warunku prędkości hamowanie silnikiem na biegu wyglądałoby jak „falowanie”.
-    bool isIdle(LogPoint p) =>
-        p.tps <= 10 && p.rpm > 400 && p.rpm < 1400 && (!p.has("SPEED") || p.speed <= 3);
+  /// Liczba zmian kierunku obrotów (szczyt ↔ dołek) z histerezą — odróżnia falowanie
+  /// od jednostajnego spadku obrotów po rozgrzaniu silnika.
+  static int _rpmReversals(List<LogPoint> w, {double hysteresis = 80}) {
+    if (w.length < 3) return 0;
+    int reversals = 0;
+    int dir = 0; // 1 = rośnie, -1 = spada
+    double extreme = w.first.rpm;
+    for (final p in w.skip(1)) {
+      if (dir >= 0 && p.rpm > extreme) {
+        extreme = p.rpm;
+        dir = 1;
+      } else if (dir <= 0 && p.rpm < extreme) {
+        extreme = p.rpm;
+        dir = -1;
+      } else if (dir == 1 && extreme - p.rpm >= hysteresis) {
+        reversals++;
+        dir = -1;
+        extreme = p.rpm;
+      } else if (dir == -1 && p.rpm - extreme >= hysteresis) {
+        reversals++;
+        dir = 1;
+        extreme = p.rpm;
+      }
+    }
+    return reversals;
+  }
 
-    // Szukamy najgorszego falowania w krótkim oknie (4 s) ciągłego biegu jałowego,
-    // żeby naturalny spadek obrotów po rozgrzaniu silnika nie był brany za usterkę.
-    List<LogPoint> idlePoints = [];
-    double rpmDelta = 0;
-    double minRpm = 0;
-    double maxRpm = 0;
-    List<LogPoint> segment = [];
-    void evaluateSegment() {
-      if (segment.length < 15) return;
-      int start = 0;
-      for (int end = 0; end < segment.length; end++) {
-        while (segment[end].timeMs - segment[start].timeMs > 4000) {
-          start++;
+  /// Sprawdza falowanie obrotów na biegu jałowym i wskazuje przyczynę (EVAP / lewe powietrze / VVT).
+  ///
+  /// Działa przy każdej szybkości odpytywania: okno analizy i odstęp, który jeszcze nie
+  /// przerywa odcinka postoju, zależą od faktycznej częstotliwości próbek (szybki CAN
+  /// ~10–20/s, stare auta na K-line nawet <1/s). Korekty oceniane odpornie (mediana,
+  /// percentyle, tylko prawidłowe wartości) — nie jedną skrajną próbką.
+  static void _checkIdleHunting(List<LogPoint> points, List<Anomaly> anomalies) {
+    final hasThrottle = points.any((p) => p.has("PEDAL") || p.has("TPS"));
+    bool isIdle(LogPoint p) =>
+        (!hasThrottle || p.tps <= 10) && p.rpm > 400 && p.rpm < 1400 && (!p.has("SPEED") || p.speed <= 3);
+
+    final dt = _medianDtMs(points);
+    final maxGap = max(1500.0, dt * 2.5);
+    final winMs = (dt * 8).clamp(4000.0, 15000.0);
+
+    // Ciągłe odcinki biegu jałowego
+    final segments = <List<LogPoint>>[];
+    var seg = <LogPoint>[];
+    for (final p in points) {
+      if (isIdle(p) && (seg.isEmpty || p.timeMs - seg.last.timeMs <= maxGap)) {
+        seg.add(p);
+      } else {
+        if (seg.isNotEmpty) segments.add(seg);
+        seg = isIdle(p) ? [p] : [];
+      }
+    }
+    if (seg.isNotEmpty) segments.add(seg);
+
+    // Najsilniejsze falowanie: rozrzut ≥ 220 obr/min i co najmniej dwie zmiany kierunku w oknie
+    List<LogPoint>? huntSeg;
+    double rpmDelta = 0, minRpm = 0, maxRpm = 0;
+    for (final sg in segments) {
+      if (sg.length < 5 || sg.last.timeMs - sg.first.timeMs < max(1500.0, dt * 4)) continue;
+      int a = 0;
+      for (int b = 0; b < sg.length; b++) {
+        while (sg[b].timeMs - sg[a].timeMs > winMs) {
+          a++;
         }
-        final window = segment.sublist(start, end + 1);
-        if (window.length < 10) continue;
-        final lo = window.map((p) => p.rpm).reduce(min);
-        final hi = window.map((p) => p.rpm).reduce(max);
-        if (hi - lo > rpmDelta) {
+        final w = sg.sublist(a, b + 1);
+        if (w.length < 5) continue;
+        final lo = w.map((p) => p.rpm).reduce(min);
+        final hi = w.map((p) => p.rpm).reduce(max);
+        if (hi - lo >= 220 && hi - lo > rpmDelta && _rpmReversals(w) >= 2) {
           rpmDelta = hi - lo;
           minRpm = lo;
           maxRpm = hi;
-          idlePoints = segment;
+          huntSeg = sg;
         }
       }
     }
+    final idlePoints = huntSeg;
+    if (idlePoints == null) return;
 
-    for (final p in points) {
-      if (isIdle(p) && (segment.isEmpty || p.timeMs - segment.last.timeMs <= 1500)) {
-        segment.add(p);
-      } else {
-        evaluateSegment();
-        segment = isIdle(p) ? [p] : [];
-      }
+    // Korekty (tylko prawidłowe) i podciśnienie na tym odcinku
+    final trims = [for (final p in idlePoints) ?_totalTrim(p)];
+    final hasTrims = trims.length >= 3;
+    final trimMed = hasTrims ? _median(trims) : 0.0;
+    final trimLo = hasTrims ? _pct(trims, 0.1) : 0.0;
+    final trimHi = hasTrims ? _pct(trims, 0.9) : 0.0;
+    final hasMap = idlePoints.any((p) => p.has("BOOST"));
+    final worstBoost = hasMap ? idlePoints.where((p) => p.has("BOOST")).map((p) => p.boost).reduce(max) : 0.0;
+    final worstPoint = idlePoints.firstWhere((p) => p.rpm == minRpm);
+
+    // Wysterowanie zaworu EVAP (PID 2E), jeśli było odczytywane
+    final evapVals = [for (final p in idlePoints) if (p.has("EVAP_VP")) p.evapVp];
+    final evapMax = evapVals.isEmpty ? null : evapVals.reduce(max);
+
+    final rich = hasTrims && (trimMed <= -10 || trimLo <= -15);
+    final lean = hasTrims && (trimMed >= 10 || trimHi >= 15);
+    final isEvapSuspect = rich;
+    final isVacuumLeakSuspect = lean;
+    final isVvtSuspect = !rich && !lean && hasMap && worstBoost >= -0.42;
+
+    String trimText() => hasTrims
+        ? "mediana ${trimMed >= 0 ? '+' : ''}${trimMed.toStringAsFixed(1)}% (od ${trimLo.toStringAsFixed(1)}% do ${trimHi.toStringAsFixed(1)}%)"
+        : "brak wiarygodnych korekt w logu";
+
+    String title = "Silne falowanie obrotów na biegu jałowym";
+    String conclusion = "Niestabilny bieg jałowy — przyczyny nie da się rozstrzygnąć z samych danych jazdy.";
+    String plain = "Na wolnych obrotach silnik faluje. Najczęstsze przyczyny to zawór EVAP (opary paliwa z baku), "
+        "nieszczelność podciśnienia, zabrudzona przepustnica albo cewki. Uruchom w aplikacji „Test zaworu EVAP” — "
+        "w 2 minuty rozstrzyga, czy winny jest zawór.";
+    String falseLead = "Wymiana silniczka krokowego lub przepustnicy w ciemno nie usuwa przyczyny, jeśli problem tkwi w podciśnieniu lub mieszance.";
+    List<String> ruledOut = [];
+
+    if (isEvapSuspect) {
+      title = "Falowanie obrotów — podejrzenie zaciętego zaworu EVAP (opary paliwa)";
+      conclusion = "Na wolnych obrotach sterownik mocno ujmuje paliwa (${trimText()}) — do silnika dostaje się dodatkowe, "
+          "niesterowane paliwo. Najczęściej to opary z baku przez otwarty zawór EVAP.";
+      plain = "Silnik faluje, bo na wolnych obrotach dostaje za dużo paliwa — najpewniej opary z baku przez zacięty zawór EVAP. "
+          "Potwierdź „Testem zaworu EVAP” w aplikacji (zaciśnięcie węża). Wymiana zaworu to zwykle tania naprawa.";
+      falseLead = "Kod P0172 (za bogato) nie oznacza uszkodzonej sondy lambda — sonda prawidłowo widzi nadmiar paliwa.";
+      ruledOut = [
+        "Wykluczono lewe powietrze — przy nieszczelności korekty byłyby dodatnie, a są ujemne",
+        if (evapMax != null && evapMax < 5) "Sterownik nie otwierał zaworu EVAP (maks. ${evapMax.toStringAsFixed(0)}%) — opary przechodzą mimo zamkniętego zaworu, czyli zawór nie domyka",
+      ];
+    } else if (isVacuumLeakSuspect) {
+      title = "Falowanie obrotów — podejrzenie lewego powietrza (nieszczelność podciśnienia)";
+      conclusion = "Na wolnych obrotach sterownik mocno dolewa paliwa (${trimText()}) — silnik zasysa niemierzone powietrze.";
+      plain = "Silnik faluje, bo na wolnych obrotach zasysa powietrze bokiem (pęknięty wąż, uszczelka kolektora, odma). "
+          "Najszybciej znajdzie to próba dymowa.";
+      falseLead = "Kod P0171 (za ubogo) często prowadzi do wymiany sondy lub pompy paliwa — a winna jest nieszczelność.";
+      ruledOut = ["Wykluczono zawór EVAP — zacięty EVAP powoduje przelanie (korekty ujemne), a nie zubożenie"];
+    } else if (isVvtSuspect) {
+      title = "Falowanie obrotów przy słabym podciśnieniu — podejrzenie zmiennych faz (VVT) lub przepustnicy";
+      conclusion = "Podciśnienie na wolnych jest słabe (${worstBoost.toStringAsFixed(2)} bar), a korekty neutralne (${trimText()}) — "
+          "mieszanka jest w porządku, problem jest mechaniczny (fazy rozrządu, przepustnica, zawory).";
+      ruledOut = ["Wykluczono zawór EVAP i lewe powietrze — korekty paliwa są neutralne"];
     }
-    evaluateSegment();
-    if (idlePoints.length < 15) return;
 
-    // Jeśli obroty na jałowym skaczą o więcej niż 220 RPM
-    if (rpmDelta >= 220) {
-      final worstPoint = idlePoints.firstWhere((p) => p.rpm == minRpm);
-      final minStft = idlePoints.map((p) => p.stft).reduce(min);
-      final maxStft = idlePoints.map((p) => p.stft).reduce(max);
-      final worstBoost = idlePoints.map((p) => p.boost).reduce(max);
-
-      final isEvapSuspect = minStft <= -15.0;
-      final isVacuumLeakSuspect = maxStft >= 15.0 && worstBoost >= -0.45;
-      final isVvtSuspect = worstBoost >= -0.42 && minStft >= -8.0 && maxStft <= 8.0;
-
-      String title = "Silne falowanie obrotów na biegu jałowym (Drżenie silnika / Rough Idle)";
-      String conclusion = "Niestabilność biegu jałowego wynika z zaburzenia bilansu paliwowo-powietrznego na wolnych obrotach.";
-      String falseLead = "UWAGA: Częsta wymiana silniczka krokowego lub przepustnicy w ciemno nie usuwa przyczyny, jeśli problem tkwi w podciśnieniu lub mieszance!";
-      List<String> ruledOut = [];
-
-      if (isEvapSuspect) {
-        title = "Falowanie i drżenie przez zacięty zawór EVAP (Zalewanie oparami paliwa)";
-        conclusion = "Mocno ujemne korekty paliwowe (STFT ${minStft.toStringAsFixed(1)}%) przy zamkniętej przepustnicy świadczą o zasysaniu niesterowanych par benzyny ze zbiornika przez otwarty elektrozawór EVAP.";
-        falseLead = "UWAGA NA BŁĄD: Błąd P0172 sugeruje uszkodzenie sondy lambda. Sonda jest sprawna – prawidłowo informuje ECU o zalewaniu silnika oparami!";
-        ruledOut = [
-          "Wykluczono zacięcie VVT – wariator nie powoduje silnego przelewania mieszanki do -20% STFT",
-          "Wykluczono lewe powietrze – przy nieszczelności korekty byłyby mocno dodatnie (+20%)",
-        ];
-      } else if (isVacuumLeakSuspect) {
-        title = "Falowanie obrotów przez lewe powietrze (Nieszczelność kolektora dolotowego)";
-        conclusion = "Mocno dodatnie korekty paliwowe (+${maxStft.toStringAsFixed(1)}%) przy słabym podciśnieniu wskazują na nieszczelność uszczelek kolektora lub pęknięty przewód serwa hamulcowego.";
-        falseLead = "UWAGA NA BŁĄD: Kod P0171 (Mieszanka za uboga) często prowadzi do błędnej wymiany sondy lambda lub pompy paliwa. Winna jest dziura w podciśnieniu!";
-        ruledOut = [
-          "Wykluczono zacięcie zaworu EVAP – zawór EVAP powoduje zalewanie, a nie zubożenie",
-          "Wykluczono uszkodzenie wtryskiwaczy",
-        ];
-      }
-
-      anomalies.add(Anomaly(
-        id: "idle_hunting_${idlePoints.first.timeMs.toInt()}",
-        title: title,
-        severity: AnomalySeverity.warning,
-        paramKey: "RPM",
-        startMs: idlePoints.first.timeMs,
-        endMs: idlePoints.last.timeMs,
-        startRpm: minRpm,
-        endRpm: maxRpm,
-        observedValueText: "Falowanie w zakresie ${minRpm.toInt()} - ${maxRpm.toInt()} RPM (Skok o ${rpmDelta.toInt()} obr/min)",
-        primarySymptom: "Silnik kuleje, faluje i drży na biegu jałowym (${minRpm.toInt()} - ${maxRpm.toInt()} RPM), uspokaja się po przegazówce ('przepaleniu')",
-        correlatedSignals: {
-          "RPM": "Skoki o ${rpmDelta.toInt()} obr/min",
-          "BOOST": "${worstBoost.toStringAsFixed(2)} bar ${worstBoost >= -0.45 ? '(słabe podciśnienie)' : '(podciśnienie w normie)'}",
-          "STFT": "${minStft.toStringAsFixed(1)}% do ${maxStft.toStringAsFixed(1)}%",
-          "TPS": "${worstPoint.tps.toInt()}% (przepustnica zamknięta)",
-        },
-        falseLeadWarning: falseLead,
-        ruledOutCauses: ruledOut,
-        rootCauseConclusion: conclusion,
-        description: "Na biegu jałowym zarejestrowano niestabilną pracę i szarpanie obrotami. Silnik kuleje, po czym po dodaniu gazu ('przepaleniu') chwilowo się uspokaja.",
-        hypotheses: [
-          "Zawieszony / nieszczelny elektrozawór pochłaniacza par paliwa EVAP – silnik na wolnych obrotach zaciąga opary benzyny z baku, dusi się i zalewa, a po przegazówce ('przepaleniu') nadmiar oparów zostaje przedmuchany",
-          "Zabrudzona nagarem przepustnica lub zaolejony czujnik ciśnienia w kolektorze MAP (brak przepływomierza w silnikach EW10)",
-          "Przebicie iskry na zintegrowanej kasecie cewek zapłonowych (Sagem/Valeo) – typowa wada silników 2.0 EW10 (przebicie do głowicy na wolnych obrotach)",
-          "Przycinający się elektrozawór zmiennych faz rozrządu VVT – po przygazowaniu wyższe ciśnienie oleju 'odwiesza' wariator",
-          "Podwieszające się popychacze hydrauliczne zaworów (tzw. szklanki) powodujące okresową utratę kompresji na wolnych obrotach",
-        ],
-        recommendations: [
-          "Zdejmij wężyk od elektrozaworu EVAP idący do kolektora ssącego i zaślep go na próbę – jeśli silnik przestanie falować, zawór EVAP jest zacięty!",
-          "Wykręć i wyczyść zmywaczem czujnik MAP w kolektorze ssącym oraz wymyj nagar z przepustnicy.",
-          "Obejrzyj listwę cewek zapłonowych pod kątem mikropęknięć i białych śladów przebicia iskry.",
-          "Wymień świece zapłonowe (zbyt duża przerwa przyspiesza padanie cewki).",
-          "W silnikach ze zmiennymi fazami (EW10A 140KM) wyczyść sitko elektrozaworu VVT.",
-        ],
-      ));
-    }
+    anomalies.add(Anomaly(
+      id: "idle_hunting_${idlePoints.first.timeMs.toInt()}",
+      title: title,
+      severity: AnomalySeverity.warning,
+      paramKey: "RPM",
+      startMs: idlePoints.first.timeMs,
+      endMs: idlePoints.last.timeMs,
+      startRpm: minRpm,
+      endRpm: maxRpm,
+      observedValueText: "Falowanie ${minRpm.toInt()}–${maxRpm.toInt()} obr/min (skok o ${rpmDelta.toInt()}); korekty: ${trimText()}",
+      primarySymptom: "Silnik faluje i drży na biegu jałowym (${minRpm.toInt()}–${maxRpm.toInt()} obr/min)",
+      plainSummary: plain,
+      correlatedSignals: {
+        "RPM": "skoki o ${rpmDelta.toInt()} obr/min",
+        "Korekty": trimText(),
+        if (hasMap) "Podciśnienie": "${worstBoost.toStringAsFixed(2)} bar ${worstBoost >= -0.45 ? '(słabe)' : '(w normie)'}",
+        if (evapMax != null) "Zawór EVAP": "wysterowanie do ${evapMax.toStringAsFixed(0)}%",
+        if (hasThrottle) "Gaz": "${worstPoint.tps.toInt()}% (puszczony)",
+      },
+      falseLeadWarning: falseLead,
+      ruledOutCauses: ruledOut,
+      rootCauseConclusion: conclusion,
+      description: "Na biegu jałowym zarejestrowano niestabilną pracę — obroty rosną i spadają o ${rpmDelta.toInt()} obr/min.",
+      hypotheses: const [
+        "Zawieszony / nieszczelny zawór EVAP — silnik zaciąga opary paliwa z baku i się dusi",
+        "Nieszczelność podciśnienia (wąż, kolektor, serwo, odma)",
+        "Zabrudzona przepustnica lub czujnik ciśnienia w kolektorze (MAP)",
+        "Przebicie na listwie cewek zapłonowych (typowe m.in. dla EW10/TU5)",
+        "Przycinający się zawór zmiennych faz rozrządu (VVT)",
+      ],
+      recommendations: const [
+        "Wykonaj w aplikacji „Test zaworu EVAP” — zaciśnij wąż od zaworu do kolektora i porównaj pracę silnika.",
+        "Wyczyść przepustnicę i czujnik MAP, wykonaj adaptację przepustnicy.",
+        "Obejrzyj listwę cewek pod kątem pęknięć i śladów przebicia.",
+        "Przy braku efektu — próba dymowa podciśnień.",
+      ],
+    ));
   }
 
-  /// Sprawdza objawy zacięcia zmiennych faz rozrządu VVT (błąd P0011 / drastyczny spadek podciśnienia w kolektorze MAP)
+  /// Sprawdza objawy zacięcia zmiennych faz rozrządu VVT (zanik podciśnienia na wolnych, P0011).
+  /// Liczy czas trwania objawu (nie liczbę próbek) i nie twierdzi „korekty neutralne”,
+  /// gdy korekt w logu nie ma.
   static void _checkVvtJamming(List<LogPoint> points, List<Anomaly> anomalies) {
     if (!points.any((p) => p.values.containsKey("BOOST"))) return;
-
-    // Szukamy punktów na biegu jałowym (zamknięta przepustnica, obroty < 1300 RPM)
+    final hasThrottle = points.any((p) => p.has("PEDAL") || p.has("TPS"));
     final idlePoints = points
-        .where((p) => p.tps <= 8 && p.rpm >= 550 && p.rpm <= 1300 && (!p.has("SPEED") || p.speed <= 3))
+        .where((p) => (!hasThrottle || p.tps <= 8) && p.rpm >= 550 && p.rpm <= 1300 && (!p.has("SPEED") || p.speed <= 3))
         .toList();
-    if (idlePoints.length < 10) return;
+    if (idlePoints.length < 3) return;
+    final gap = max(1500.0, _medianDtMs(points) * 2.5);
 
-    // Normalne podciśnienie na jałowym w sprawnym silniku to -0.60 do -0.75 bar (MAP 25-40 kPa).
-    // Gdy wariator VVT zatnie się w pozycji przyspieszonej, zawory ssące otwierają się za wcześnie
-    // (współotwarcie z wydechem) - spaliny cofają się w dolot i podciśnienie drastycznie ZANIKA (boost > -0.42 bar, MAP > 58-70 kPa).
-    final vvtJammedPoints = idlePoints.where((p) => p.boost >= -0.42 && p.stft >= -12.0 && p.stft <= 12.0).toList();
+    // Zanik podciśnienia przy neutralnych korektach (lewe powietrze dałoby mocno dodatnie)
+    final jammed = idlePoints.where((p) {
+      if (!p.has("BOOST") || p.boost < -0.42) return false;
+      final t = _totalTrim(p);
+      return t == null || t.abs() <= 12;
+    }).toList();
+    if (jammed.length < 3 || _durationMs(jammed, gap) < 3000) return;
 
-    if (vvtJammedPoints.length >= 8) {
-      final worstPoint = vvtJammedPoints.reduce((a, b) => a.boost > b.boost ? a : b);
-      anomalies.add(Anomaly(
-        id: "vvt_jammed_${vvtJammedPoints.first.timeMs.toInt()}",
-        title: "Podejrzenie zacięcia zmiennych faz rozrządu VVT (Błąd P0011 / Zanik podciśnienia)",
-        severity: AnomalySeverity.critical,
-        paramKey: "BOOST",
-        startMs: vvtJammedPoints.first.timeMs,
-        endMs: vvtJammedPoints.last.timeMs,
-        startRpm: vvtJammedPoints.first.rpm,
-        endRpm: vvtJammedPoints.last.rpm,
-        observedValueText: "Podciśnienie spadło do ${worstPoint.boost.toStringAsFixed(2)} bar (Norma: -0.65 do -0.75 bar)",
-        primarySymptom: "Gwałtowny zanik podciśnienia w kolektorze ssącym (${worstPoint.boost.toStringAsFixed(2)} bar) przy zamkniętej przepustnicy (0%)",
-        correlatedSignals: {
-          "BOOST": "${worstPoint.boost.toStringAsFixed(2)} bar (spadek podciśnienia, MAP > 620 mbar)",
-          "TPS": "${worstPoint.tps.toInt()}% (przepustnica w 100% zamknięta)",
-          "STFT": "${worstPoint.stft.toStringAsFixed(1)}% (korekta neutralna)",
-          "RPM": "${worstPoint.rpm.toInt()} obr/min (drżenie i falowanie silnika)",
-        },
-        falseLeadWarning: "UWAGA NA FAŁSZYWY TROP: Kod błędu P0106 (Sygnał MAP nielogiczny) lub P0300 (Wypadanie zapłonów). Wielu mechaników niepotrzebnie wymienia czujnik MAP lub cewki zapłonowe. Czujnik MAP mierzy prawdę – podciśnienie zniknęło, bo zacięty wariator VVT cofa spaliny w kolektor dolotowy!",
-        ruledOutCauses: [
-          "Wykluczono uszkodzenie czujnika MAP – mierzy rzeczywisty napływ spalin z zaworów",
-          "Wykluczono nieszczelność podciśnienia (lewe powietrze) – przy lewym powietrzu korekty STFT wzrosłyby powyżej +20%, a są neutralne (${worstPoint.stft.toStringAsFixed(1)}%)",
-          "Wykluczono lejący wtryskiwacz paliwa",
-        ],
-        rootCauseConclusion: "Zacięcie elektrozaworu lub wariatora zmiennych faz rozrządu w pozycji wyprzedzenia na biegu jałowym. Otwarcie zaworów ssących pokrywa się z wydechowymi (współotwarcie faz), przez co spaliny wtłaczane są do kolektora dolotowego. Silnik kuleje i dławi się spalinami. Gwałtowne 'przepalenie' (skok ciśnienia oleju do 4.5 bar) odblokowuje zawór VVT i silnik wraca do normy.",
-        description: "Na biegu jałowym przy całkowicie zamkniętej przepustnicy (${worstPoint.tps.toInt()}%) nastąpił gwałtowny zanik podciśnienia w kolektorze ssącym (ciśnienie MAP wzrosło powyżej 580-650 mbar). W silnikach ze zmiennymi fazami rozrządu (np. VVT, VANOS, VTC) oznacza to zawieszenie się wałka rozrządu w pozycji wyprzedzenia (otwarte zawory ssące nakładają się na wydechowe). Silnik dusi się spalinami, potężnie wibruje i faluje. Po gwałtownej przegazówce ('przepaleniu') skok ciśnienia oleju odblokowuje koło zmiennych faz lub elektrozawór i silnik wraca do równej pracy.",
-        hypotheses: [
-          "Zacięty elektrozawór sterowania zmiennymi fazami VVT – zanieczyszczenia/nagar w mikro-sitku filtrującym zaworu",
-          "Wyrobiony rygiel (locking pin) w kole zmiennych faz rozrządu – nie rygluje wariatora w pozycji spoczynkowej (0°) na wolnych obrotach",
-          "Niskie ciśnienie oleju silnikowego na rozgrzanym silniku na biegu jałowym (rozrzedzony olej nie cofa wariatora)",
-          "Poważna nieszczelność podciśnienia w kolektorze ssącym (np. pęknięty wężyk serwa hamulcowego lub uszczelka kolektora)",
-        ],
-        recommendations: [
-          "Wykręć elektrozawór sterujący VVT (z boku głowicy silnika) i dokładnie przemyj zmywaczem sitko oraz sprawdź ruch iglicy pod napięciem 12V.",
-          "Wymień olej silnikowy wraz z filtrem na wysokiej jakości syntetyk o właściwej lepkości (wariatory faz są bardzo czułe na lepkość i czystość oleju).",
-          "Odczytaj kody błędów w sterowniku silnika – szukaj kodu P0011 (Camshaft Over-Advanced) lub P0012.",
-          "Zmierz ciśnienie oleju manometrem na gorącym silniku na wolnych obrotach (powinno wynosić min. 1.2 - 1.5 bar).",
-        ],
-      ));
-    }
+    final trims = [for (final p in jammed) ?_totalTrim(p)];
+    final hasTrims = trims.length >= 3;
+    final worstPoint = jammed.reduce((a, b) => a.boost > b.boost ? a : b);
+    final trimNote = hasTrims ? "korekty neutralne (mediana ${_median(trims).toStringAsFixed(1)}%)" : "brak korekt w logu";
+    anomalies.add(Anomaly(
+      id: "vvt_jammed_${jammed.first.timeMs.toInt()}",
+      title: "Podejrzenie zacięcia zmiennych faz rozrządu VVT (Błąd P0011 / Zanik podciśnienia)",
+      severity: AnomalySeverity.critical,
+      paramKey: "BOOST",
+      startMs: jammed.first.timeMs,
+      endMs: jammed.last.timeMs,
+      startRpm: jammed.first.rpm,
+      endRpm: jammed.last.rpm,
+      observedValueText: "Podciśnienie spadło do ${worstPoint.boost.toStringAsFixed(2)} bar (Norma: -0.65 do -0.75 bar)",
+      primarySymptom: "Gwałtowny zanik podciśnienia w kolektorze ssącym (${worstPoint.boost.toStringAsFixed(2)} bar) przy zamkniętej przepustnicy (0%)",
+      correlatedSignals: {
+        "BOOST": "${worstPoint.boost.toStringAsFixed(2)} bar (spadek podciśnienia, MAP > 620 mbar)",
+        if (hasThrottle) "Gaz": "${worstPoint.tps.toInt()}% (przepustnica zamknięta)",
+        "Korekty": trimNote,
+        "RPM": "${worstPoint.rpm.toInt()} obr/min (drżenie i falowanie silnika)",
+      },
+      falseLeadWarning: "UWAGA NA FAŁSZYWY TROP: Kod błędu P0106 (Sygnał MAP nielogiczny) lub P0300 (Wypadanie zapłonów). Wielu mechaników niepotrzebnie wymienia czujnik MAP lub cewki zapłonowe. Czujnik MAP mierzy prawdę – podciśnienie zniknęło, bo zacięty wariator VVT cofa spaliny w kolektor dolotowy!",
+      ruledOutCauses: [
+        "Wykluczono uszkodzenie czujnika MAP – mierzy rzeczywisty napływ spalin z zaworów",
+        if (hasTrims) "Wykluczono nieszczelność podciśnienia (lewe powietrze) – przy lewym powietrzu korekty byłyby mocno dodatnie, a są $trimNote",
+        "Wykluczono lejący wtryskiwacz paliwa",
+      ],
+      rootCauseConclusion: "Zacięcie elektrozaworu lub wariatora zmiennych faz rozrządu w pozycji wyprzedzenia na biegu jałowym. Otwarcie zaworów ssących pokrywa się z wydechowymi (współotwarcie faz), przez co spaliny wtłaczane są do kolektora dolotowego. Silnik kuleje i dławi się spalinami. Gwałtowne 'przepalenie' (skok ciśnienia oleju do 4.5 bar) odblokowuje zawór VVT i silnik wraca do normy.",
+      description: "Na biegu jałowym przy całkowicie zamkniętej przepustnicy (${worstPoint.tps.toInt()}%) nastąpił gwałtowny zanik podciśnienia w kolektorze ssącym (ciśnienie MAP wzrosło powyżej 580-650 mbar). W silnikach ze zmiennymi fazami rozrządu (np. VVT, VANOS, VTC) oznacza to zawieszenie się wałka rozrządu w pozycji wyprzedzenia (otwarte zawory ssące nakładają się na wydechowe). Silnik dusi się spalinami, potężnie wibruje i faluje. Po gwałtownej przegazówce ('przepaleniu') skok ciśnienia oleju odblokowuje koło zmiennych faz lub elektrozawór i silnik wraca do równej pracy.",
+      hypotheses: [
+        "Zacięty elektrozawór sterowania zmiennymi fazami VVT – zanieczyszczenia/nagar w mikro-sitku filtrującym zaworu",
+        "Wyrobiony rygiel (locking pin) w kole zmiennych faz rozrządu – nie rygluje wariatora w pozycji spoczynkowej (0°) na wolnych obrotach",
+        "Niskie ciśnienie oleju silnikowego na rozgrzanym silniku na biegu jałowym (rozrzedzony olej nie cofa wariatora)",
+        "Poważna nieszczelność podciśnienia w kolektorze ssącym (np. pęknięty wężyk serwa hamulcowego lub uszczelka kolektora)",
+      ],
+      recommendations: [
+        "Wykręć elektrozawór sterujący VVT (z boku głowicy silnika) i dokładnie przemyj zmywaczem sitko oraz sprawdź ruch iglicy pod napięciem 12V.",
+        "Wymień olej silnikowy wraz z filtrem na wysokiej jakości syntetyk o właściwej lepkości (wariatory faz są bardzo czułe na lepkość i czystość oleju).",
+        "Odczytaj kody błędów w sterowniku silnika – szukaj kodu P0011 (Camshaft Over-Advanced) lub P0012.",
+        "Zmierz ciśnienie oleju manometrem na gorącym silniku na wolnych obrotach (powinno wynosić min. 1.2 - 1.5 bar).",
+      ],
+    ));
   }
 
   /// Krzyżowa analiza wypadania zapłonów: odróżnia problem z cewką/świecą od wtryskiwacza
@@ -1099,8 +1206,9 @@ class AnomalyEngine {
         if (misfires <= 0.0) continue;
 
         // Znaleźliśmy wypadanie zapłonu. Patrzymy na korekty w tym czasie.
-        if (p.values.containsKey("STFT") && p.values.containsKey("LTFT")) {
-          final totalTrim = p.values["STFT"]! + p.values["LTFT"]!;
+        final trimOrNull = (_validTrim(p, "STFT") != null && _validTrim(p, "LTFT") != null) ? _totalTrim(p) : null;
+        if (trimOrNull != null) {
+          final totalTrim = trimOrNull;
 
           // Czekamy 1-2 sekundy (około 20 punktów) aby nie generować tysiąca anomalii na raz
           final endTime = p.timeMs + 1500;
